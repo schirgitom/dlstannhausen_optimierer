@@ -37,16 +37,10 @@ public sealed class OptimiererCsvPythonParameterTests
                                        ?? "Host=localhost;Port=5433;Database=soweit_optimizer;Username=dlstannhausen;Password=dlstannhausen";
 
         using var redis = TryConnectRedis(redisConnectionString);
-        if (redis is null)
-        {
-            return;
-        }
+        Assert.NotNull(redis);
 
         using var db = TryConnectPostgres(postgresConnectionString);
-        if (db is null)
-        {
-            return;
-        }
+        Assert.NotNull(db);
 
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
