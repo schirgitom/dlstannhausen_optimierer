@@ -1,10 +1,11 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
-using SoWeiT.Optimizer.Api.Contracts;
-using SoWeiT.Optimizer.Api.Data;
-using SoWeiT.Optimizer.Api.Persistence;
-using SoWeiT.Optimizer.Api.Services;
+using SoWeiT.Optimizer.Service.Contracts;
+using SoWeiT.Optimizer.Persistence.History.Data;
+using SoWeiT.Optimizer.Persistence.History.Persistence;
+using SoWeiT.Optimizer.Persistence.Redis.Persistence;
+using SoWeiT.Optimizer.Service.Services;
 using System.Globalization;
 using StackExchange.Redis;
 
@@ -75,7 +76,6 @@ public sealed class OptimiererCsvPythonParameterTests
         var resOpt = new double[n];
         var zeitstempel = new DateTimeOffset(2021, 8, 31, 0, 0, 0, TimeSpan.Zero);
         var step = TimeSpan.FromSeconds(15);
-        double lastPv = 0.0;
 
         try
         {
@@ -106,7 +106,6 @@ public sealed class OptimiererCsvPythonParameterTests
                 }
 
                 var pv = Parse(parts[7]);
-                lastPv = pv;
 
                 zeitstempel = zeitstempel.Add(step);
                 var result = opt1.Run(pv, verbrauch, zeitstempel);
@@ -156,8 +155,7 @@ public sealed class OptimiererCsvPythonParameterTests
                 .Where(x => x.SessionId == sessionId && x.RequestType == "run")
                 .OrderBy(x => x.Id)
                 .ToList();
-            Assert.Equal(simDauer, runRequests.Count);
-            Assert.Equal(lastPv, runRequests[^1].AvailablePvPowerWatt.GetValueOrDefault(), 9);
+            Assert.Empty(runRequests);
 
             var allRequestIds = db.Requests
                 .Where(x => x.SessionId == sessionId)
@@ -167,7 +165,7 @@ public sealed class OptimiererCsvPythonParameterTests
                 .AsNoTracking()
                 .Where(x => allRequestIds.Contains(x.RequestEntryId))
                 .ToList();
-            Assert.Equal(simDauer * n, userEntries.Count);
+            Assert.Empty(userEntries);
 
             var deleted = service.Delete(sessionId);
             Assert.True(deleted);
@@ -221,10 +219,15 @@ public sealed class OptimiererCsvPythonParameterTests
         var users = new List<OptimizerRequestUserLog>(requiredPowerWatt.Length);
         for (var i = 0; i < requiredPowerWatt.Length; i++)
         {
-            users.Add(new OptimizerRequestUserLog(i, requiredPowerWatt[i], switchState[i] > 0.0));
+            users.Add(new OptimizerRequestUserLog(i, BuildCustomerNumber(i), requiredPowerWatt[i], switchState[i] > 0.0));
         }
 
         return users;
+    }
+
+    private static string BuildCustomerNumber(int index)
+    {
+        return $"K-{index + 1:000}";
     }
 
     private static IConnectionMultiplexer? TryConnectRedis(string connectionString)
@@ -247,7 +250,7 @@ public sealed class OptimiererCsvPythonParameterTests
                 .UseNpgsql(connectionString)
                 .Options;
             var db = new OptimizerHistoryDbContext(options);
-            db.Database.EnsureCreated();
+            db.Database.Migrate();
             db.Database.OpenConnection();
             db.Database.CloseConnection();
             return db;
@@ -276,3 +279,4 @@ public sealed class OptimiererCsvPythonParameterTests
         }
     }
 }
+

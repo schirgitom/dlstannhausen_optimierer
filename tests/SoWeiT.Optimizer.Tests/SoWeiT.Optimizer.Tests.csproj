@@ -24,8 +24,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\SoWeiT.Optimizer\SoWeiT.Optimizer.csproj" />
     <ProjectReference Include="..\..\src\SoWeiT.Optimizer.Api\SoWeiT.Optimizer.Api.csproj" />
+    <ProjectReference Include="..\..\src\SoWeiT.Optimizer.Service\SoWeiT.Optimizer.Service.csproj" />
+    <ProjectReference Include="..\..\src\SoWeiT.Optimizer.Persistence.History\SoWeiT.Optimizer.Persistence.History.csproj" />
+    <ProjectReference Include="..\..\src\SoWeiT.Optimizer.Persistence.Redis\SoWeiT.Optimizer.Persistence.Redis.csproj" />
+    <ProjectReference Include="..\..\src\SoWeiT.Optimizer\SoWeiT.Optimizer.csproj" />
   </ItemGroup>
 
   <ItemGroup>

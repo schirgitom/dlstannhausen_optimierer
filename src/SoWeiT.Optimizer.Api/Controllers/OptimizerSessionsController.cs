@@ -1,8 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
-using SoWeiT.Optimizer;
-using SoWeiT.Optimizer.Api.Contracts;
-using SoWeiT.Optimizer.Api.Persistence;
-using SoWeiT.Optimizer.Api.Services;
+using SoWeiT.Optimizer.Service.Contracts;
+using SoWeiT.Optimizer.Service.Services;
 
 namespace SoWeiT.Optimizer.Api.Controllers;
 
@@ -64,13 +62,12 @@ public sealed class OptimizerSessionsController : ControllerBase
             return error;
         }
 
-        if (!TryGetOptimizer(resolvedSessionId, out var optimizer, out var notFound))
+        if (!_sessionService.TryPrepareData(resolvedSessionId, request, out var data) || data is null)
         {
-            return notFound;
+            return SessionNotFound(resolvedSessionId);
         }
 
         SetSessionCookie(resolvedSessionId);
-        var data = optimizer.PrepareData(request.Verbrauch);
         return Ok(data);
     }
 
@@ -83,20 +80,22 @@ public sealed class OptimizerSessionsController : ControllerBase
             return error;
         }
 
-        if (!TryGetOptimizer(resolvedSessionId, out var optimizer, out var notFound))
+        if (!_sessionService.TryPreprocessing(resolvedSessionId, request, out var result, out var validationError))
         {
-            return notFound;
+            return SessionNotFound(resolvedSessionId);
+        }
+
+        if (validationError is not null)
+        {
+            return BadRequest(new { Message = validationError });
         }
 
         SetSessionCookie(resolvedSessionId);
-        var result = optimizer.Preprocessing(request.Zeitstempel, request.Verbrauch);
-        _sessionService.PersistMutation(
-            resolvedSessionId,
-            optimizer,
-            "preprocessing",
-            request.Zeitstempel,
-            optimizer.Erzeugung,
-            BuildPreprocessingUserLogs(request.Verbrauch, result));
+        if (result is null)
+        {
+            return BadRequest(new { Message = "Preprocessing result is missing." });
+        }
+
         return Ok(result);
     }
 
@@ -109,19 +108,12 @@ public sealed class OptimizerSessionsController : ControllerBase
             return error;
         }
 
-        if (!TryGetOptimizer(resolvedSessionId, out var optimizer, out var notFound))
+        if (!_sessionService.TryPostprocessing(resolvedSessionId, request))
         {
-            return notFound;
+            return SessionNotFound(resolvedSessionId);
         }
 
         SetSessionCookie(resolvedSessionId);
-        optimizer.Postprocessing(request.Zeitstempel);
-        _sessionService.PersistMutation(
-            resolvedSessionId,
-            optimizer,
-            "postprocessing",
-            request.Zeitstempel,
-            optimizer.Erzeugung);
         return NoContent();
     }
 
@@ -134,71 +126,23 @@ public sealed class OptimizerSessionsController : ControllerBase
             return error;
         }
 
-        if (!TryGetOptimizer(resolvedSessionId, out var optimizer, out var notFound))
+        if (!_sessionService.TryRun(resolvedSessionId, request, out var response, out var validationError))
         {
-            return notFound;
+            return SessionNotFound(resolvedSessionId);
+        }
+
+        if (validationError is not null)
+        {
+            return BadRequest(new { Message = validationError });
         }
 
         SetSessionCookie(resolvedSessionId);
-        var result = optimizer.Run(request.PvErzeugungWatt, request.Verbrauch, request.Zeitstempel);
-        _sessionService.PersistMutation(
-            resolvedSessionId,
-            optimizer,
-            "run",
-            request.Zeitstempel,
-            request.PvErzeugungWatt,
-            BuildRunUserLogs(request.Verbrauch, result.Schaltzustand));
-        return Ok(new RunResponse(result.Schaltzustand, result.ResOpt, result.ResOpt));
-    }
-
-    [HttpPost("{sessionId:guid}/update-verteilung")]
-    [HttpPost("current/update-verteilung")]
-    public IActionResult UpdateVerteilung([FromBody] UpdateVerteilungRequest request, Guid? sessionId = null)
-    {
-        if (!TryResolveSessionId(sessionId, out var resolvedSessionId, out var error))
+        if (response is null)
         {
-            return error;
+            return BadRequest(new { Message = "Run response is missing." });
         }
 
-        if (!TryGetOptimizer(resolvedSessionId, out var optimizer, out var notFound))
-        {
-            return notFound;
-        }
-
-        SetSessionCookie(resolvedSessionId);
-        optimizer.UpdateVerteilung(request.PvVerbrauchDeltas, request.VerbrauchDeltas);
-        _sessionService.PersistMutation(
-            resolvedSessionId,
-            optimizer,
-            "update_verteilung",
-            DateTimeOffset.UtcNow,
-            optimizer.Erzeugung);
-        return NoContent();
-    }
-
-    [HttpPost("{sessionId:guid}/update-verteilung-mittels-energie")]
-    [HttpPost("current/update-verteilung-mittels-energie")]
-    public IActionResult UpdateVerteilungMittelsEnergie([FromBody] UpdateVerteilungMittelsEnergieRequest request, Guid? sessionId = null)
-    {
-        if (!TryResolveSessionId(sessionId, out var resolvedSessionId, out var error))
-        {
-            return error;
-        }
-
-        if (!TryGetOptimizer(resolvedSessionId, out var optimizer, out var notFound))
-        {
-            return notFound;
-        }
-
-        SetSessionCookie(resolvedSessionId);
-        optimizer.UpdateVerteilungMittelsEnergie(request.PvVerbrauchEnergieStand, request.VerbrauchEnergieStand);
-        _sessionService.PersistMutation(
-            resolvedSessionId,
-            optimizer,
-            "update_verteilung_mittels_energie",
-            DateTimeOffset.UtcNow,
-            optimizer.Erzeugung);
-        return NoContent();
+        return Ok(response);
     }
 
     [HttpGet("{sessionId:guid}/state")]
@@ -210,24 +154,13 @@ public sealed class OptimizerSessionsController : ControllerBase
             return error;
         }
 
-        if (!TryGetOptimizer(resolvedSessionId, out var optimizer, out var notFound))
+        if (!_sessionService.TryGetState(resolvedSessionId, out var state) || state is null)
         {
-            return notFound;
+            return SessionNotFound(resolvedSessionId);
         }
 
         SetSessionCookie(resolvedSessionId);
-        return Ok(new OptimizerStateResponse(
-            optimizer.N,
-            optimizer.Sperrzeit1,
-            optimizer.Sperrzeit2,
-            optimizer.Erzeugung,
-            optimizer.Faktor.ToArray(),
-            ToJagged(optimizer.Verteilung),
-            optimizer.Schaltkontingent.ToArray(),
-            optimizer.Schaltzeit.ToArray(),
-            ToJagged(optimizer.Schaltzustand),
-            optimizer.PvVerbrauchEnergieStand?.ToArray(),
-            optimizer.VerbrauchEnergieStand?.ToArray()));
+        return Ok(state);
     }
 
     private bool TryResolveSessionId(Guid? routeSessionId, out Guid sessionId, out ActionResult error)
@@ -250,21 +183,10 @@ public sealed class OptimizerSessionsController : ControllerBase
         return false;
     }
 
-    private bool TryGetOptimizer(Guid sessionId, out Optimierer optimizer, out ActionResult notFound)
+    private ActionResult SessionNotFound(Guid sessionId)
     {
-        _logger.LogInformation("TryGetOptimizer for session {SessionId}", sessionId);
-
-        if (_sessionService.TryGet(sessionId, out var found) && found is not null)
-        {
-            optimizer = found;
-            notFound = null!;
-            return true;
-        }
-
-        optimizer = null!;
         Response.Cookies.Delete(SessionCookieName);
-        notFound = NotFound(new { Message = $"Session {sessionId} not found or expired." });
-        return false;
+        return NotFound(new { Message = $"Session {sessionId} not found or expired." });
     }
 
     private void SetSessionCookie(Guid sessionId)
@@ -295,44 +217,5 @@ public sealed class OptimizerSessionsController : ControllerBase
         }
     }
 
-    private static double[][] ToJagged(double[,] matrix)
-    {
-        var rows = matrix.GetLength(0);
-        var cols = matrix.GetLength(1);
-        var result = new double[rows][];
-
-        for (var r = 0; r < rows; r++)
-        {
-            result[r] = new double[cols];
-            for (var c = 0; c < cols; c++)
-            {
-                result[r][c] = matrix[r, c];
-            }
-        }
-
-        return result;
-    }
-
-    private static IReadOnlyList<OptimizerRequestUserLog> BuildPreprocessingUserLogs(double[] requiredPowerWatt, double[] preprocessedResult)
-    {
-        var users = new List<OptimizerRequestUserLog>(requiredPowerWatt.Length);
-        for (var i = 0; i < requiredPowerWatt.Length; i++)
-        {
-            var isSwitchAllowed = requiredPowerWatt[i] <= 0.0 || preprocessedResult[i] > 0.0;
-            users.Add(new OptimizerRequestUserLog(i, requiredPowerWatt[i], isSwitchAllowed));
-        }
-
-        return users;
-    }
-
-    private static IReadOnlyList<OptimizerRequestUserLog> BuildRunUserLogs(double[] requiredPowerWatt, double[] switchState)
-    {
-        var users = new List<OptimizerRequestUserLog>(requiredPowerWatt.Length);
-        for (var i = 0; i < requiredPowerWatt.Length; i++)
-        {
-            users.Add(new OptimizerRequestUserLog(i, requiredPowerWatt[i], switchState[i] > 0.0));
-        }
-
-        return users;
-    }
 }
+

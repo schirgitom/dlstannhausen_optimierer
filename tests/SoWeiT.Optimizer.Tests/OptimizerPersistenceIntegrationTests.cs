@@ -1,10 +1,11 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
-using SoWeiT.Optimizer.Api.Contracts;
-using SoWeiT.Optimizer.Api.Data;
-using SoWeiT.Optimizer.Api.Persistence;
-using SoWeiT.Optimizer.Api.Services;
+using SoWeiT.Optimizer.Service.Contracts;
+using SoWeiT.Optimizer.Persistence.History.Data;
+using SoWeiT.Optimizer.Persistence.History.Persistence;
+using SoWeiT.Optimizer.Persistence.Redis.Persistence;
+using SoWeiT.Optimizer.Service.Services;
 using StackExchange.Redis;
 
 namespace SoWeiT.Optimizer.Tests;
@@ -158,7 +159,7 @@ public sealed class OptimizerPersistenceIntegrationTests
                 .UseNpgsql(connectionString)
                 .Options;
             var db = new OptimizerHistoryDbContext(options);
-            db.Database.EnsureCreated();
+            db.Database.Migrate();
             db.Database.OpenConnection();
             db.Database.CloseConnection();
             return db;
@@ -187,3 +188,4 @@ public sealed class OptimizerPersistenceIntegrationTests
         }
     }
 }
+
