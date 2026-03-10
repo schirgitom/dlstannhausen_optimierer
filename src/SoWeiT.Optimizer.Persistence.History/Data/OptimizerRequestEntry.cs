@@ -14,6 +14,10 @@ public sealed class OptimizerRequestEntry
 
     public double? AvailablePvPowerWatt { get; set; }
 
+    public double? ConsumedPowerWatt { get; set; }
+
+    public double? TotalRequiredPowerWatt { get; set; }
+
     public OptimizerSessionEntry Session { get; set; } = null!;
 
     public ICollection<OptimizerRequestUserEntry> Users { get; set; } = new List<OptimizerRequestUserEntry>();

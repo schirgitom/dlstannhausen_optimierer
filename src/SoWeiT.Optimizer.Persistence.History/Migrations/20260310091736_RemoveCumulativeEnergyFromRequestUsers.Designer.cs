@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using SoWeiT.Optimizer.Persistence.History.Data;
@@ -11,9 +12,11 @@ using SoWeiT.Optimizer.Persistence.History.Data;
 namespace SoWeiT.Optimizer.Persistence.History.Migrations
 {
     [DbContext(typeof(OptimizerHistoryDbContext))]
-    partial class OptimizerHistoryDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260310091736_RemoveCumulativeEnergyFromRequestUsers")]
+    partial class RemoveCumulativeEnergyFromRequestUsers
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

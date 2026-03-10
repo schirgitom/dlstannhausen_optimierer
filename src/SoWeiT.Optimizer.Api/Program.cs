@@ -1,6 +1,5 @@
-using Microsoft.EntityFrameworkCore;
 using Serilog;
-using SoWeiT.Optimizer.Persistence.History.Data;
+using SoWeiT.Optimizer.Messaging.RabbitMq;
 using SoWeiT.Optimizer.Persistence.History.Persistence;
 using SoWeiT.Optimizer.Persistence.Redis.Persistence;
 using SoWeiT.Optimizer.Service.Services;
@@ -27,14 +26,7 @@ builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
     return ConnectionMultiplexer.Connect(redisConnectionString);
 });
 builder.Services.AddSingleton<IOptimizerStateStore, RedisOptimizerStateStore>();
-builder.Services.AddDbContextFactory<OptimizerHistoryDbContext>(options =>
-{
-    var postgresConnectionString = builder.Configuration.GetConnectionString("Postgres")
-                                   ?? throw new InvalidOperationException("ConnectionStrings:Postgres is missing.");
-    options.UseNpgsql(postgresConnectionString);
-});
-builder.Services.AddSingleton<IOptimizerUnitOfWorkFactory, EfCoreOptimizerUnitOfWorkFactory>();
-builder.Services.AddSingleton<IOptimizerHistoryStore, EfCoreOptimizerHistoryStore>();
+builder.Services.AddSingleton<IOptimizerHistoryStore, RabbitMqOptimizerHistoryStore>();
 
 var app = builder.Build();
 
@@ -47,13 +39,6 @@ app.UseSerilogRequestLogging();
 
 app.UseHttpsRedirection();
 app.MapControllers();
-
-using (var scope = app.Services.CreateScope())
-{
-    var dbFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<OptimizerHistoryDbContext>>();
-    using var dbContext = dbFactory.CreateDbContext();
-    dbContext.Database.Migrate();
-}
 
 app.Run();
 

@@ -48,6 +48,8 @@ public sealed class OptimizerHistoryDbContext : DbContext
         requests.Property(x => x.RequestType).HasMaxLength(128).IsRequired();
         requests.Property(x => x.RequestTimestamp).IsRequired();
         requests.Property(x => x.CreatedAtUtc).IsRequired();
+        requests.Property(x => x.ConsumedPowerWatt);
+        requests.Property(x => x.TotalRequiredPowerWatt);
         requests.HasIndex(x => x.SessionId);
         requests.HasIndex(x => x.RequestTimestamp);
         requests.HasOne(x => x.Session)
@@ -64,6 +66,9 @@ public sealed class OptimizerHistoryDbContext : DbContext
         users.Property(x => x.CustomerId).IsRequired();
         users.Property(x => x.RequiredPowerWatt).IsRequired();
         users.Property(x => x.IsSwitchAllowed).IsRequired();
+        users.Property(x => x.FairnessFactor);
+        users.Property(x => x.SwitchBudget);
+        users.Property(x => x.ShouldSwitch);
         users.HasIndex(x => x.RequestEntryId);
         users.HasIndex(x => x.CustomerId);
         users.HasIndex(x => new { x.RequestEntryId, x.UserIndex }).IsUnique();

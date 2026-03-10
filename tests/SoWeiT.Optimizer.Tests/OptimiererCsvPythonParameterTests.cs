@@ -1,12 +1,10 @@
-using Microsoft.EntityFrameworkCore;
+using System.Globalization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
-using SoWeiT.Optimizer.Service.Contracts;
-using SoWeiT.Optimizer.Persistence.History.Data;
 using SoWeiT.Optimizer.Persistence.History.Persistence;
 using SoWeiT.Optimizer.Persistence.Redis.Persistence;
+using SoWeiT.Optimizer.Service.Contracts;
 using SoWeiT.Optimizer.Service.Services;
-using System.Globalization;
 using StackExchange.Redis;
 
 namespace SoWeiT.Optimizer.Tests;
@@ -34,14 +32,9 @@ public sealed class OptimiererCsvPythonParameterTests
 
         var redisConnectionString = Environment.GetEnvironmentVariable("TEST_REDIS_CONNECTION")
                                     ?? "localhost:6379";
-        var postgresConnectionString = Environment.GetEnvironmentVariable("TEST_POSTGRES_CONNECTION")
-                                       ?? "Host=localhost;Port=5433;Database=soweit_optimizer;Username=dlstannhausen;Password=dlstannhausen";
 
         using var redis = TryConnectRedis(redisConnectionString);
         Assert.NotNull(redis);
-
-        using var db = TryConnectPostgres(postgresConnectionString);
-        Assert.NotNull(db);
 
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
@@ -51,9 +44,7 @@ public sealed class OptimiererCsvPythonParameterTests
             .Build();
 
         var stateStore = new RedisOptimizerStateStore(redis, NullLogger<RedisOptimizerStateStore>.Instance, config);
-        var historyStore = new EfCoreOptimizerHistoryStore(
-            new SingleUnitOfWorkFactory(postgresConnectionString),
-            NullLogger<EfCoreOptimizerHistoryStore>.Instance);
+        var historyStore = new InMemoryOptimizerHistoryStore();
         var service = new OptimizerSessionService(
             NullLoggerFactory.Instance,
             NullLogger<OptimizerSessionService>.Instance,
@@ -115,7 +106,8 @@ public sealed class OptimiererCsvPythonParameterTests
                     "run",
                     zeitstempel,
                     pv,
-                    BuildRunUserLogs(verbrauch, result.Schaltzustand));
+                    consumedPowerWatt: verbrauch.Sum(),
+                    users: BuildRunUserLogs(verbrauch, result.Schaltzustand));
 
                 for (var i = 0; i < n; i++)
                 {
@@ -150,31 +142,17 @@ public sealed class OptimiererCsvPythonParameterTests
                 Assert.Equal(verbrauchEnergieStand[i], persisted.Snapshot.VerbrauchEnergieStand[i], 9);
             }
 
-            var runRequests = db.Requests
-                .AsNoTracking()
-                .Where(x => x.SessionId == sessionId && x.RequestType == "run")
-                .OrderBy(x => x.Id)
-                .ToList();
-            Assert.Empty(runRequests);
-
-            var allRequestIds = db.Requests
-                .Where(x => x.SessionId == sessionId)
-                .Select(x => x.Id)
-                .ToArray();
-            var userEntries = db.RequestUsers
-                .AsNoTracking()
-                .Where(x => allRequestIds.Contains(x.RequestEntryId))
-                .ToList();
-            Assert.Empty(userEntries);
+            var allRequests = historyStore.GetRequests(sessionId);
+            Assert.Equal(1 + (simDauer * 2), allRequests.Count(x =>
+                x.RequestType is "session_created" or "run" or "update_verteilung_mittels_energie"));
+            Assert.Equal(simDauer, allRequests.Count(x => x.RequestType == "run"));
 
             var deleted = service.Delete(sessionId);
             Assert.True(deleted);
             Assert.False(redisDb.KeyExists(redisKey));
 
-            var endedSession = db.Sessions
-                .AsNoTracking()
-                .Single(x => x.SessionId == sessionId);
-            Assert.NotNull(endedSession.EndedAtUtc);
+            var endedSession = historyStore.TryGetSession(sessionId);
+            Assert.NotNull(endedSession?.EndedAtUtc);
         }
         finally
         {
@@ -182,24 +160,6 @@ public sealed class OptimiererCsvPythonParameterTests
             {
                 var key = RedisKeyPrefix + sessionId.ToString("D");
                 redisDb.KeyDelete(key);
-
-                var requestIds = db.Requests
-                    .Where(x => x.SessionId == sessionId)
-                    .Select(x => x.Id)
-                    .ToArray();
-                if (requestIds.Length > 0)
-                {
-                    db.RequestUsers
-                        .Where(x => requestIds.Contains(x.RequestEntryId))
-                        .ExecuteDelete();
-                }
-
-                db.Requests
-                    .Where(x => x.SessionId == sessionId)
-                    .ExecuteDelete();
-                db.Sessions
-                    .Where(x => x.SessionId == sessionId)
-                    .ExecuteDelete();
             }
         }
 
@@ -241,42 +201,4 @@ public sealed class OptimiererCsvPythonParameterTests
             return null;
         }
     }
-
-    private static OptimizerHistoryDbContext? TryConnectPostgres(string connectionString)
-    {
-        try
-        {
-            var options = new DbContextOptionsBuilder<OptimizerHistoryDbContext>()
-                .UseNpgsql(connectionString)
-                .Options;
-            var db = new OptimizerHistoryDbContext(options);
-            db.Database.Migrate();
-            db.Database.OpenConnection();
-            db.Database.CloseConnection();
-            return db;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private sealed class SingleUnitOfWorkFactory : IOptimizerUnitOfWorkFactory
-    {
-        private readonly string _connectionString;
-
-        public SingleUnitOfWorkFactory(string connectionString)
-        {
-            _connectionString = connectionString;
-        }
-
-        public IOptimizerUnitOfWork Create()
-        {
-            var options = new DbContextOptionsBuilder<OptimizerHistoryDbContext>()
-                .UseNpgsql(_connectionString)
-                .Options;
-            return new EfCoreOptimizerUnitOfWork(new OptimizerHistoryDbContext(options));
-        }
-    }
 }
-

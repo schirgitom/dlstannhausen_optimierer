@@ -19,4 +19,8 @@
     <Folder Include="Migrations\" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\SoWeiT.Optimizer.History.Contracts\SoWeiT.Optimizer.History.Contracts.csproj" />
+  </ItemGroup>
+
 </Project>

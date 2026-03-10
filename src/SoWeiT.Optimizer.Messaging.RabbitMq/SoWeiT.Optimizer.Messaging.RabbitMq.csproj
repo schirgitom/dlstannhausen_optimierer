@@ -7,15 +7,13 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.3" />
+    <PackageReference Include="RabbitMQ.Client" Version="6.8.1" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\SoWeiT.Optimizer\SoWeiT.Optimizer.csproj" />
     <ProjectReference Include="..\SoWeiT.Optimizer.History.Contracts\SoWeiT.Optimizer.History.Contracts.csproj" />
-    <ProjectReference Include="..\SoWeiT.Optimizer.Persistence.Redis\SoWeiT.Optimizer.Persistence.Redis.csproj" />
   </ItemGroup>
 
 </Project>

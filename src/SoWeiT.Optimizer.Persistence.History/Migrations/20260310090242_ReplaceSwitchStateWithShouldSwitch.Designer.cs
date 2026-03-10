@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using SoWeiT.Optimizer.Persistence.History.Data;
@@ -11,9 +12,11 @@ using SoWeiT.Optimizer.Persistence.History.Data;
 namespace SoWeiT.Optimizer.Persistence.History.Migrations
 {
     [DbContext(typeof(OptimizerHistoryDbContext))]
-    partial class OptimizerHistoryDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260310090242_ReplaceSwitchStateWithShouldSwitch")]
+    partial class ReplaceSwitchStateWithShouldSwitch
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -107,6 +110,9 @@ namespace SoWeiT.Optimizer.Persistence.History.Migrations
                     b.Property<bool>("IsSwitchAllowed")
                         .HasColumnType("boolean");
 
+                    b.Property<double?>("PvAssignedEnergyCumulative")
+                        .HasColumnType("double precision");
+
                     b.Property<long>("RequestEntryId")
                         .HasColumnType("bigint");
 
@@ -117,6 +123,9 @@ namespace SoWeiT.Optimizer.Persistence.History.Migrations
                         .HasColumnType("boolean");
 
                     b.Property<double?>("SwitchBudget")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("TotalConsumptionEnergyCumulative")
                         .HasColumnType("double precision");
 
                     b.Property<int>("UserIndex")

@@ -1,0 +1,51 @@
+version: "3.9"
+
+services:
+
+  dls-tannhausen-timescaledb:
+    image: timescale/timescaledb:latest-pg18
+    container_name: dls-tannhausen-timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: appdb
+      POSTGRES_USER: dlstannhausen
+      POSTGRES_PASSWORD: dlstannhausen
+    ports:
+      - "5433:5432"
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+    networks:
+      - backend
+
+  dls-tannhausen-redis:
+    image: redis:latest
+    container_name: dls-tannhausen-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - backend
+
+  dls-tannhausen-seq:
+    image: datalust/seq:latest
+    container_name: dls-tannhausen-seq
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+    ports:
+      - "5341:80"
+    volumes:
+      - ./seq_data:/data
+    networks:
+      - backend
+
+volumes:
+  timescaledb_data:
+
+
+networks:
+  backend:
+    driver: bridge

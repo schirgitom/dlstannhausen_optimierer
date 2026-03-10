@@ -3,29 +3,10 @@ using SoWeiT.Optimizer.Persistence.History.Data;
 
 namespace SoWeiT.Optimizer.Persistence.History.Persistence;
 
-public sealed record OptimizerRequestUserLog(int UserIndex, string Customer, double RequiredPowerWatt, bool IsSwitchAllowed);
-public sealed record OptimizerSessionConfig(int N, int Sperrzeit1, int Sperrzeit2, bool UseOrTools, bool UseGreedyFallback);
-
-public sealed record OptimizerRequestLog(
-    string RequestType,
-    DateTimeOffset RequestTimestamp,
-    double? AvailablePvPowerWatt,
-    IReadOnlyList<OptimizerRequestUserLog>? Users = null);
-
-public interface IOptimizerHistoryStore
-{
-    void CreateSession(Guid sessionId, OptimizerSessionConfig sessionConfig, DateTime createdAtUtc);
-
-    void MarkSessionEnded(Guid sessionId, DateTime endedAtUtc);
-
-    void AppendRequest(Guid sessionId, OptimizerRequestLog request);
-}
-
 public sealed class EfCoreOptimizerHistoryStore : IOptimizerHistoryStore
 {
     private static readonly HashSet<string> SkippedRequestTypes = new(StringComparer.OrdinalIgnoreCase)
     {
-        "run",
         "update_verteilung_mittels_energie"
     };
 
@@ -118,7 +99,9 @@ public sealed class EfCoreOptimizerHistoryStore : IOptimizerHistoryStore
             RequestType = request.RequestType,
             RequestTimestamp = request.RequestTimestamp,
             CreatedAtUtc = DateTime.UtcNow,
-            AvailablePvPowerWatt = request.AvailablePvPowerWatt
+            AvailablePvPowerWatt = request.AvailablePvPowerWatt,
+            ConsumedPowerWatt = request.ConsumedPowerWatt,
+            TotalRequiredPowerWatt = request.TotalRequiredPowerWatt
         };
 
         if (request.Users is { Count: > 0 })
@@ -149,7 +132,10 @@ public sealed class EfCoreOptimizerHistoryStore : IOptimizerHistoryStore
                     UserIndex = user.UserIndex,
                     Customer = customerEntity,
                     RequiredPowerWatt = user.RequiredPowerWatt,
-                    IsSwitchAllowed = user.IsSwitchAllowed
+                    IsSwitchAllowed = user.IsSwitchAllowed,
+                    FairnessFactor = user.FairnessFactor,
+                    SwitchBudget = user.SwitchBudget,
+                    ShouldSwitch = user.ShouldSwitch
                 });
             }
         }

@@ -14,9 +14,7 @@ public sealed record UserPowerRequest(string Kunde, double VerbrauchWatt);
 public sealed record RunRequest(
     double PvErzeugungWatt,
     UserPowerRequest[] Nutzer,
-    DateTimeOffset Zeitstempel,
-    double[] PvVerbrauchEnergieStand,
-    double[] VerbrauchEnergieStand);
+    DateTimeOffset Zeitstempel);
 
 public sealed record PreprocessingRequest(UserPowerRequest[] Nutzer, DateTimeOffset Zeitstempel);
 

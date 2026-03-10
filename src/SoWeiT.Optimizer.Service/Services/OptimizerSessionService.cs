@@ -81,6 +81,13 @@ public sealed class OptimizerSessionService
         if (IsExpired(sessionId))
         {
             _logger.LogWarning("Session expired by inactivity: {SessionId}", sessionId);
+            _historyStore.AppendRequest(
+                sessionId,
+                new OptimizerRequestLog(
+                    "session_expired",
+                    DateTimeOffset.UtcNow,
+                    _cache.TryGetValue(sessionId, out var cachedOptimizer) ? cachedOptimizer?.Erzeugung : null));
+            _historyStore.MarkSessionEnded(sessionId, DateTime.UtcNow);
             Invalidate(sessionId);
             optimizer = null;
             return false;
@@ -139,6 +146,8 @@ public sealed class OptimizerSessionService
         string eventType,
         DateTimeOffset requestTimestamp,
         double? availablePvPowerWatt,
+        double? consumedPowerWatt = null,
+        double? totalRequiredPowerWatt = null,
         IReadOnlyList<OptimizerRequestUserLog>? users = null)
     {
         if (!_stateStore.TryLoad(sessionId, out var persisted) || persisted is null)
@@ -150,10 +159,12 @@ public sealed class OptimizerSessionService
         _historyStore.AppendRequest(
             sessionId,
             new OptimizerRequestLog(
-                eventType,
-                requestTimestamp,
-                availablePvPowerWatt,
-                users));
+                RequestType: eventType,
+                RequestTimestamp: requestTimestamp,
+                AvailablePvPowerWatt: availablePvPowerWatt,
+                ConsumedPowerWatt: consumedPowerWatt,
+                TotalRequiredPowerWatt: totalRequiredPowerWatt,
+                Users: users));
         Touch(sessionId);
     }
 
@@ -189,13 +200,16 @@ public sealed class OptimizerSessionService
         }
 
         preprocessedResult = optimizer.Preprocessing(request.Zeitstempel, requiredPowerWatt);
+        var preprocessingUsers = BuildPreprocessingUserLogs(optimizer, customers, requiredPowerWatt, preprocessedResult);
         PersistMutation(
             sessionId,
             optimizer,
             "preprocessing",
             request.Zeitstempel,
             optimizer.Erzeugung,
-            BuildPreprocessingUserLogs(customers, requiredPowerWatt, preprocessedResult));
+            CalculateConsumedPower(preprocessingUsers),
+            CalculateTotalRequiredPower(preprocessingUsers),
+            preprocessingUsers);
         return true;
     }
 
@@ -231,22 +245,26 @@ public sealed class OptimizerSessionService
             return true;
         }
 
-        if (request.PvVerbrauchEnergieStand.Length != optimizer.N || request.VerbrauchEnergieStand.Length != optimizer.N)
+        var result = optimizer.Run(request.PvErzeugungWatt, requiredPowerWatt, request.Zeitstempel);
+        var pvVerbrauchEnergieStand = optimizer.PvVerbrauchEnergieStand?.ToArray() ?? new double[optimizer.N];
+        var verbrauchEnergieStand = optimizer.VerbrauchEnergieStand?.ToArray() ?? new double[optimizer.N];
+        for (var i = 0; i < optimizer.N; i++)
         {
-            validationError =
-                $"Energy stand arrays must each have length {optimizer.N}. Got PvVerbrauchEnergieStand={request.PvVerbrauchEnergieStand.Length}, VerbrauchEnergieStand={request.VerbrauchEnergieStand.Length}.";
-            return true;
+            pvVerbrauchEnergieStand[i] += result.ResOpt[i];
+            verbrauchEnergieStand[i] += requiredPowerWatt[i];
         }
 
-        var result = optimizer.Run(request.PvErzeugungWatt, requiredPowerWatt, request.Zeitstempel);
-        optimizer.UpdateVerteilungMittelsEnergie(request.PvVerbrauchEnergieStand, request.VerbrauchEnergieStand);
+        optimizer.UpdateVerteilungMittelsEnergie(pvVerbrauchEnergieStand, verbrauchEnergieStand);
+        var runUsers = BuildRunUserLogs(optimizer, customers, requiredPowerWatt, result.Schaltzustand);
         PersistMutation(
             sessionId,
             optimizer,
             "run",
             request.Zeitstempel,
             request.PvErzeugungWatt,
-            BuildRunUserLogs(customers, requiredPowerWatt, result.Schaltzustand));
+            CalculateConsumedPower(runUsers),
+            CalculateTotalRequiredPower(runUsers),
+            runUsers);
         response = new RunResponse(result.Schaltzustand, result.ResOpt, result.ResOpt);
         return true;
     }
@@ -361,6 +379,7 @@ public sealed class OptimizerSessionService
     }
 
     private static IReadOnlyList<OptimizerRequestUserLog> BuildPreprocessingUserLogs(
+        Optimierer optimizer,
         string[] customers,
         double[] requiredPowerWatt,
         double[] preprocessedResult)
@@ -369,13 +388,14 @@ public sealed class OptimizerSessionService
         for (var i = 0; i < requiredPowerWatt.Length; i++)
         {
             var isSwitchAllowed = requiredPowerWatt[i] <= 0.0 || preprocessedResult[i] > 0.0;
-            users.Add(new OptimizerRequestUserLog(i, customers[i], requiredPowerWatt[i], isSwitchAllowed));
+            users.Add(BuildUserLog(optimizer, i, customers[i], requiredPowerWatt[i], isSwitchAllowed, shouldSwitch: null));
         }
 
         return users;
     }
 
     private static IReadOnlyList<OptimizerRequestUserLog> BuildRunUserLogs(
+        Optimierer optimizer,
         string[] customers,
         double[] requiredPowerWatt,
         double[] switchState)
@@ -383,10 +403,43 @@ public sealed class OptimizerSessionService
         var users = new List<OptimizerRequestUserLog>(requiredPowerWatt.Length);
         for (var i = 0; i < requiredPowerWatt.Length; i++)
         {
-            users.Add(new OptimizerRequestUserLog(i, customers[i], requiredPowerWatt[i], switchState[i] > 0.0));
+            var shouldSwitch = switchState[i] > 0.0;
+            users.Add(BuildUserLog(optimizer, i, customers[i], requiredPowerWatt[i], shouldSwitch, shouldSwitch));
         }
 
         return users;
+    }
+
+    private static OptimizerRequestUserLog BuildUserLog(
+        Optimierer optimizer,
+        int index,
+        string customer,
+        double requiredPowerWatt,
+        bool isSwitchAllowed,
+        bool? shouldSwitch)
+    {
+        return new OptimizerRequestUserLog(
+            UserIndex: index,
+            Customer: customer,
+            RequiredPowerWatt: requiredPowerWatt,
+            IsSwitchAllowed: isSwitchAllowed,
+            FairnessFactor: optimizer.Faktor[index],
+            SwitchBudget: optimizer.Schaltkontingent[index],
+            ShouldSwitch: shouldSwitch);
+    }
+
+    private static double CalculateConsumedPower(IReadOnlyList<OptimizerRequestUserLog> users)
+    {
+        return users
+            .Where(x => x.IsSwitchAllowed && x.RequiredPowerWatt > 0.0)
+            .Sum(x => x.RequiredPowerWatt);
+    }
+
+    private static double CalculateTotalRequiredPower(IReadOnlyList<OptimizerRequestUserLog> users)
+    {
+        return users
+            .Where(x => x.RequiredPowerWatt > 0.0)
+            .Sum(x => x.RequiredPowerWatt);
     }
 
     private static bool TryExtractUserPower(
