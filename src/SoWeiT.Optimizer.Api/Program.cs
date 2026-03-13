@@ -1,3 +1,4 @@
+using SoWeiT.Optimizer.Api.Configuration;
 using Serilog;
 using SoWeiT.Optimizer.Messaging.RabbitMq;
 using SoWeiT.Optimizer.Persistence.History.Persistence;
@@ -6,6 +7,7 @@ using SoWeiT.Optimizer.Service.Services;
 using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Configuration.AddConsulConfiguration(builder.Environment);
 
 Log.Logger = new LoggerConfiguration()
     .ReadFrom.Configuration(builder.Configuration)

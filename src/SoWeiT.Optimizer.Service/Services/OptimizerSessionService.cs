@@ -13,6 +13,9 @@ namespace SoWeiT.Optimizer.Service.Services;
 
 public sealed class OptimizerSessionService
 {
+    private const int DefaultRunRecoverySperrzeit1Seconds = 300;
+    private const int DefaultRunRecoverySperrzeit2Seconds = 60;
+
     private readonly ConcurrentDictionary<Guid, Optimierer> _cache = new();
     private readonly ConcurrentDictionary<Guid, DateTimeOffset> _lastAccessUtc = new();
     private readonly ILoggerFactory _loggerFactory;
@@ -20,6 +23,10 @@ public sealed class OptimizerSessionService
     private readonly IOptimizerStateStore _stateStore;
     private readonly IOptimizerHistoryStore _historyStore;
     private readonly TimeSpan _inactivityTimeout;
+    private readonly int _runRecoverySperrzeit1Seconds;
+    private readonly int _runRecoverySperrzeit2Seconds;
+    private readonly bool _runRecoveryUseOrTools;
+    private readonly bool _runRecoveryUseGreedyFallback;
 
     public OptimizerSessionService(
         ILoggerFactory loggerFactory,
@@ -35,6 +42,10 @@ public sealed class OptimizerSessionService
 
         var timeoutMinutes = configuration.GetValue<int?>("OptimizerStateStore:SessionTtlMinutes") ?? 720;
         _inactivityTimeout = TimeSpan.FromMinutes(timeoutMinutes);
+        _runRecoverySperrzeit1Seconds = configuration.GetValue<int?>("OptimizerSessionRecovery:Sperrzeit1") ?? DefaultRunRecoverySperrzeit1Seconds;
+        _runRecoverySperrzeit2Seconds = configuration.GetValue<int?>("OptimizerSessionRecovery:Sperrzeit2") ?? DefaultRunRecoverySperrzeit2Seconds;
+        _runRecoveryUseOrTools = configuration.GetValue<bool?>("OptimizerSessionRecovery:UseOrTools") ?? true;
+        _runRecoveryUseGreedyFallback = configuration.GetValue<bool?>("OptimizerSessionRecovery:UseGreedyFallback") ?? false;
     }
 
     public Guid Create(CreateOptimizerSessionRequest request)
@@ -266,6 +277,34 @@ public sealed class OptimizerSessionService
             CalculateTotalRequiredPower(runUsers),
             runUsers);
         response = new RunResponse(result.Schaltzustand, result.ResOpt, result.ResOpt);
+        return true;
+    }
+
+    public bool TryCreateSessionForRunRecovery(RunRequest request, out Guid sessionId, out string? validationError)
+    {
+        sessionId = Guid.Empty;
+        if (!TryExtractUserPower(request.Nutzer, out _, out _, out validationError))
+        {
+            return false;
+        }
+
+        var createRequest = new CreateOptimizerSessionRequest(
+            N: request.Nutzer.Length,
+            Sperrzeit1: _runRecoverySperrzeit1Seconds,
+            Sperrzeit2: _runRecoverySperrzeit2Seconds,
+            UseOrTools: _runRecoveryUseOrTools,
+            UseGreedyFallback: _runRecoveryUseGreedyFallback);
+
+        sessionId = Create(createRequest);
+        _logger.LogInformation(
+            "Created recovery session for run: SessionId={SessionId}, N={N}, Sperrzeit1={Sperrzeit1}, Sperrzeit2={Sperrzeit2}, UseOrTools={UseOrTools}, UseGreedyFallback={UseGreedyFallback}",
+            sessionId,
+            createRequest.N,
+            createRequest.Sperrzeit1,
+            createRequest.Sperrzeit2,
+            createRequest.UseOrTools,
+            createRequest.UseGreedyFallback);
+        validationError = null;
         return true;
     }
 

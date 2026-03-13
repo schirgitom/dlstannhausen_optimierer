@@ -138,6 +138,73 @@ public sealed class OptimizerControllerCsvEndToEndTests
         }
     }
 
+    [Fact]
+    public void Run_WithoutValidSession_CreatesRecoverySession_AndReturnsResponse()
+    {
+        var redisConnectionString = Environment.GetEnvironmentVariable("TEST_REDIS_CONNECTION")
+                                    ?? "localhost:6379";
+        using var redis = ConnectRedisOrThrow(redisConnectionString);
+
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["OptimizerStateStore:SessionTtlMinutes"] = "60",
+                ["OptimizerSessionRecovery:Sperrzeit1"] = "300",
+                ["OptimizerSessionRecovery:Sperrzeit2"] = "60",
+                ["OptimizerSessionRecovery:UseOrTools"] = "true",
+                ["OptimizerSessionRecovery:UseGreedyFallback"] = "false"
+            })
+            .Build();
+
+        var stateStore = new RedisOptimizerStateStore(redis, NullLogger<RedisOptimizerStateStore>.Instance, config);
+        var historyStore = new InMemoryOptimizerHistoryStore();
+        var service = new OptimizerSessionService(
+            NullLoggerFactory.Instance,
+            NullLogger<OptimizerSessionService>.Instance,
+            stateStore,
+            historyStore,
+            config);
+        var controller = BuildController(service);
+
+        Guid recoveredSessionId = Guid.Empty;
+        var redisDb = redis.GetDatabase();
+        try
+        {
+            var runResult = controller.Run(
+                new RunRequest(
+                    1500,
+                    BuildNutzer([500, 600, 700]),
+                    DateTimeOffset.UtcNow));
+
+            var runOk = Assert.IsType<OkObjectResult>(runResult.Result);
+            var runResponse = Assert.IsType<RunResponse>(runOk.Value);
+            Assert.Equal(3, runResponse.Schaltzustand.Length);
+            Assert.Equal(3, runResponse.ResOpt.Length);
+
+            Assert.True(controller.Response.Headers.TryGetValue("X-Optimizer-Session-Id", out var sessionHeader));
+            Assert.True(Guid.TryParse(sessionHeader.ToString(), out recoveredSessionId));
+            Assert.True(redisDb.KeyExists(RedisKeyPrefix + recoveredSessionId.ToString("D")));
+
+            var session = historyStore.TryGetSession(recoveredSessionId);
+            Assert.NotNull(session);
+            Assert.Equal(3, session!.Config.N);
+            Assert.Equal(300, session.Config.Sperrzeit1);
+            Assert.Equal(60, session.Config.Sperrzeit2);
+            Assert.True(session.Config.UseOrTools);
+            Assert.False(session.Config.UseGreedyFallback);
+
+            var requests = historyStore.GetRequests(recoveredSessionId);
+            Assert.Equal(["session_created", "run"], requests.Select(x => x.RequestType).ToArray());
+        }
+        finally
+        {
+            if (recoveredSessionId != Guid.Empty)
+            {
+                redisDb.KeyDelete(RedisKeyPrefix + recoveredSessionId.ToString("D"));
+            }
+        }
+    }
+
     private static OptimizerSessionsController BuildController(OptimizerSessionService service)
     {
         var controller = new OptimizerSessionsController(

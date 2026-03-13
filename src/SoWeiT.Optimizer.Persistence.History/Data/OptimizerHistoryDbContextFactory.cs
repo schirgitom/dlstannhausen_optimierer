@@ -7,7 +7,8 @@ public sealed class OptimizerHistoryDbContextFactory : IDesignTimeDbContextFacto
 {
     public OptimizerHistoryDbContext CreateDbContext(string[] args)
     {
-        var connectionString = ResolveConnectionString(args);
+        var (connectionString, source) = ResolveConnectionString(args);
+        Console.WriteLine($"[OptimizerHistoryDbContextFactory] Using connection string from {source}.");
 
         var optionsBuilder = new DbContextOptionsBuilder<OptimizerHistoryDbContext>();
         optionsBuilder.UseNpgsql(connectionString);
@@ -15,27 +16,27 @@ public sealed class OptimizerHistoryDbContextFactory : IDesignTimeDbContextFacto
         return new OptimizerHistoryDbContext(optionsBuilder.Options);
     }
 
-    private static string ResolveConnectionString(string[] args)
+    private static (string ConnectionString, string Source) ResolveConnectionString(string[] args)
     {
         var argumentConnection = GetArgumentValue(args, "--connection");
         if (!string.IsNullOrWhiteSpace(argumentConnection))
         {
-            return argumentConnection;
+            return (argumentConnection, "command line argument --connection");
         }
 
         var nestedEnvConnection = Environment.GetEnvironmentVariable("ConnectionStrings__Postgres");
         if (!string.IsNullOrWhiteSpace(nestedEnvConnection))
         {
-            return nestedEnvConnection;
+            return (nestedEnvConnection, "environment variable ConnectionStrings__Postgres");
         }
 
         var flatEnvConnection = Environment.GetEnvironmentVariable("POSTGRES_CONNECTION_STRING");
         if (!string.IsNullOrWhiteSpace(flatEnvConnection))
         {
-            return flatEnvConnection;
+            return (flatEnvConnection, "environment variable POSTGRES_CONNECTION_STRING");
         }
 
-        return "Host=localhost;Port=5433;Database=soweit_optimizer;Username=dlstannhausen;Password=dlstannhausen";
+        return ("Host=localhost;Port=5433;Database=soweit_optimizer;Username=dlstannhausen;Password=dlstannhausen", "hardcoded default");
     }
 
     private static string? GetArgumentValue(string[] args, string name)

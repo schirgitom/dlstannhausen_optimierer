@@ -123,12 +123,26 @@ public sealed class OptimizerSessionsController : ControllerBase
     {
         if (!TryResolveSessionId(sessionId, out var resolvedSessionId, out var error))
         {
-            return error;
+            if (!TryRunWithRecoveredSession(request, out resolvedSessionId, out var recoveredResponse, out var recoveredValidationError))
+            {
+                if (recoveredValidationError is not null)
+                {
+                    return BadRequest(new { Message = recoveredValidationError });
+                }
+
+                return error;
+            }
+
+            SetSessionTracking(resolvedSessionId);
+            return Ok(recoveredResponse);
         }
 
         if (!_sessionService.TryRun(resolvedSessionId, request, out var response, out var validationError))
         {
-            return SessionNotFound(resolvedSessionId);
+            if (!TryRunWithRecoveredSession(request, out resolvedSessionId, out response, out validationError))
+            {
+                return SessionNotFound(resolvedSessionId);
+            }
         }
 
         if (validationError is not null)
@@ -136,7 +150,7 @@ public sealed class OptimizerSessionsController : ControllerBase
             return BadRequest(new { Message = validationError });
         }
 
-        SetSessionCookie(resolvedSessionId);
+        SetSessionTracking(resolvedSessionId);
         if (response is null)
         {
             return BadRequest(new { Message = "Run response is missing." });
@@ -187,6 +201,34 @@ public sealed class OptimizerSessionsController : ControllerBase
     {
         Response.Cookies.Delete(SessionCookieName);
         return NotFound(new { Message = $"Session {sessionId} not found or expired." });
+    }
+
+    private bool TryRunWithRecoveredSession(
+        RunRequest request,
+        out Guid sessionId,
+        out RunResponse? response,
+        out string? validationError)
+    {
+        response = null;
+        validationError = null;
+        if (!_sessionService.TryCreateSessionForRunRecovery(request, out sessionId, out validationError))
+        {
+            return false;
+        }
+
+        if (!_sessionService.TryRun(sessionId, request, out response, out validationError))
+        {
+            return false;
+        }
+
+        _logger.LogInformation("Run recovered with new session {SessionId}", sessionId);
+        return true;
+    }
+
+    private void SetSessionTracking(Guid sessionId)
+    {
+        Response.Headers["X-Optimizer-Session-Id"] = sessionId.ToString("D");
+        SetSessionCookie(sessionId);
     }
 
     private void SetSessionCookie(Guid sessionId)

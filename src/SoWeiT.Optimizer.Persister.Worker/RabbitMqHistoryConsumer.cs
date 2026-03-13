@@ -33,6 +33,13 @@ public sealed class RabbitMqHistoryConsumer : BackgroundService
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        _logger.LogInformation(
+            "Starting RabbitMQ history consumer: Host={Host}, Port={Port}, VirtualHost={VirtualHost}, Queue={QueueName}",
+            _options.HostName,
+            _options.Port,
+            _options.VirtualHost,
+            _options.QueueName);
+
         var factory = new ConnectionFactory
         {
             HostName = _options.HostName,
@@ -78,12 +85,18 @@ public sealed class RabbitMqHistoryConsumer : BackgroundService
 
         try
         {
+            _logger.LogDebug("Processing message {DeliveryTag}", args.DeliveryTag);
             var body = Encoding.UTF8.GetString(args.Body.ToArray());
             var message = JsonSerializer.Deserialize<OptimizerHistoryEvent>(body, _serializerOptions);
             if (message is null)
             {
                 throw new InvalidOperationException("Could not deserialize history event message.");
             }
+
+            _logger.LogDebug(
+                "Received history event {EventType} for session {SessionId}",
+                message.EventType,
+                message.SessionId);
 
             switch (message.EventType)
             {
@@ -119,16 +132,93 @@ public sealed class RabbitMqHistoryConsumer : BackgroundService
             }
 
             _channel.BasicAck(deliveryTag: args.DeliveryTag, multiple: false);
+            _logger.LogDebug("Message acknowledged {DeliveryTag}", args.DeliveryTag);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error while processing history event; message will be requeued.");
-            _channel.BasicNack(deliveryTag: args.DeliveryTag, multiple: false, requeue: true);
+            var currentRetryCount = GetRetryCount(args.BasicProperties);
+            if (currentRetryCount < _options.MaxRetryCount)
+            {
+                var nextRetryCount = currentRetryCount + 1;
+                var retryProperties = _channel.CreateBasicProperties();
+                retryProperties.Persistent = args.BasicProperties?.Persistent ?? true;
+                retryProperties.ContentType = args.BasicProperties?.ContentType;
+                retryProperties.ContentEncoding = args.BasicProperties?.ContentEncoding;
+                retryProperties.CorrelationId = args.BasicProperties?.CorrelationId;
+                retryProperties.MessageId = args.BasicProperties?.MessageId;
+                retryProperties.Type = args.BasicProperties?.Type;
+                retryProperties.Timestamp = args.BasicProperties?.Timestamp ?? default;
+                retryProperties.Headers = CopyHeaders(args.BasicProperties?.Headers);
+                retryProperties.Headers[RetryHeaderName] = nextRetryCount;
+
+                _channel.BasicPublish(
+                    exchange: string.Empty,
+                    routingKey: _options.QueueName,
+                    mandatory: false,
+                    basicProperties: retryProperties,
+                    body: args.Body);
+
+                _logger.LogError(
+                    ex,
+                    "Error while processing history event; retry {RetryAttempt}/{MaxRetryCount}.",
+                    nextRetryCount,
+                    _options.MaxRetryCount);
+
+                _channel.BasicAck(deliveryTag: args.DeliveryTag, multiple: false);
+                return;
+            }
+
+            _logger.LogError(
+                ex,
+                "Error while processing history event; max retries reached ({MaxRetryCount}). Message will be rejected without requeue.",
+                _options.MaxRetryCount);
+            _channel.BasicNack(deliveryTag: args.DeliveryTag, multiple: false, requeue: false);
         }
+    }
+
+    private const string RetryHeaderName = "x-history-retry-count";
+
+    private static Dictionary<string, object> CopyHeaders(IDictionary<string, object>? originalHeaders)
+    {
+        var headers = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+        if (originalHeaders is null)
+        {
+            return headers;
+        }
+
+        foreach (var pair in originalHeaders)
+        {
+            headers[pair.Key] = pair.Value;
+        }
+
+        return headers;
+    }
+
+    private static int GetRetryCount(IBasicProperties? properties)
+    {
+        if (properties?.Headers is null || !properties.Headers.TryGetValue(RetryHeaderName, out var value))
+        {
+            return 0;
+        }
+
+        return value switch
+        {
+            byte b => b,
+            sbyte sb => sb,
+            short s => s,
+            ushort us => us,
+            int i => i,
+            uint ui => (int)ui,
+            long l => (int)l,
+            ulong ul => (int)ul,
+            byte[] bytes when int.TryParse(Encoding.UTF8.GetString(bytes), out var parsed) => parsed,
+            _ => 0
+        };
     }
 
     public override void Dispose()
     {
+        _logger.LogInformation("Disposing RabbitMQ history consumer");
         _channel?.Dispose();
         _connection?.Dispose();
         base.Dispose();
