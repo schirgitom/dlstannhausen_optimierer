@@ -13,4 +13,6 @@ public sealed class RabbitMqHistoryOptions
     public string VirtualHost { get; set; } = "/";
 
     public string QueueName { get; set; } = "optimizer.history";
+
+    public int MaxRetryCount { get; set; } = 5;
 }

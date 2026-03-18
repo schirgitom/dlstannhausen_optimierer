@@ -10,6 +10,8 @@ namespace SoWeiT.Optimizer.Persister.Worker;
 
 public sealed class RabbitMqHistoryConsumer : BackgroundService
 {
+    private static readonly TimeSpan ReconnectDelay = TimeSpan.FromSeconds(10);
+
     private readonly ILogger<RabbitMqHistoryConsumer> _logger;
     private readonly IOptimizerHistoryStore _historyStore;
     private readonly RabbitMqHistoryOptions _options;
@@ -31,7 +33,7 @@ public sealed class RabbitMqHistoryConsumer : BackgroundService
         _options = configuration.GetSection("RabbitMq").Get<RabbitMqHistoryOptions>() ?? new RabbitMqHistoryOptions();
     }
 
-    protected override Task ExecuteAsync(CancellationToken stoppingToken)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation(
             "Starting RabbitMQ history consumer: Host={Host}, Port={Port}, VirtualHost={VirtualHost}, Queue={QueueName}",
@@ -40,46 +42,99 @@ public sealed class RabbitMqHistoryConsumer : BackgroundService
             _options.VirtualHost,
             _options.QueueName);
 
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try
+            {
+                ConnectConsumer();
+                _logger.LogInformation("History consumer connected to RabbitMQ queue {QueueName}", _options.QueueName);
+                await Task.Delay(Timeout.Infinite, stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "RabbitMQ consumer connection failed. Retrying in {DelaySeconds} seconds.",
+                    ReconnectDelay.TotalSeconds);
+            }
+            finally
+            {
+                CloseConnection();
+            }
+
+            try
+            {
+                await Task.Delay(ReconnectDelay, stoppingToken);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+            {
+                break;
+            }
+        }
+    }
+
+    private void ConnectConsumer()
+    {
         var factory = new ConnectionFactory
         {
             HostName = _options.HostName,
             Port = _options.Port,
             UserName = _options.UserName,
             Password = _options.Password,
-            VirtualHost = _options.VirtualHost
+            VirtualHost = _options.VirtualHost,
+            AutomaticRecoveryEnabled = true,
+            TopologyRecoveryEnabled = true
         };
 
         _connection = factory.CreateConnection("optimizer-persister-history-consumer");
+        _connection.ConnectionShutdown += (_, args) =>
+            _logger.LogWarning(
+                "RabbitMQ connection shutdown detected. ReplyCode={ReplyCode}, ReplyText={ReplyText}",
+                args.ReplyCode,
+                args.ReplyText);
+
         _channel = _connection.CreateModel();
+        _channel.ModelShutdown += (_, args) =>
+            _logger.LogWarning(
+                "RabbitMQ channel shutdown detected. ReplyCode={ReplyCode}, ReplyText={ReplyText}",
+                args.ReplyCode,
+                args.ReplyText);
+
         _channel.QueueDeclare(queue: _options.QueueName, durable: true, exclusive: false, autoDelete: false, arguments: null);
         _channel.BasicQos(prefetchSize: 0, prefetchCount: 1, global: false);
 
         var consumer = new EventingBasicConsumer(_channel);
         consumer.Received += (_, ea) => HandleMessage(ea);
-
         _channel.BasicConsume(queue: _options.QueueName, autoAck: false, consumer: consumer);
-        _logger.LogInformation("History consumer connected to RabbitMQ queue {QueueName}", _options.QueueName);
+    }
 
-        stoppingToken.Register(() =>
+    private void CloseConnection()
+    {
+        try
         {
-            try
-            {
-                _channel?.Close();
-                _connection?.Close();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Error while closing RabbitMQ connection");
-            }
-        });
-
-        return Task.CompletedTask;
+            _channel?.Close();
+            _connection?.Close();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Error while closing RabbitMQ connection");
+        }
+        finally
+        {
+            _channel = null;
+            _connection = null;
+        }
     }
 
     private void HandleMessage(BasicDeliverEventArgs args)
     {
-        if (_channel is null)
+        if (_channel is not { IsOpen: true })
         {
+            _logger.LogWarning("Skipping message {DeliveryTag} because RabbitMQ channel is not open.", args.DeliveryTag);
             return;
         }
 
@@ -131,8 +186,7 @@ public sealed class RabbitMqHistoryConsumer : BackgroundService
                     throw new InvalidOperationException($"Unsupported event type '{message.EventType}'.");
             }
 
-            _channel.BasicAck(deliveryTag: args.DeliveryTag, multiple: false);
-            _logger.LogDebug("Message acknowledged {DeliveryTag}", args.DeliveryTag);
+            SafeAck(args.DeliveryTag);
         }
         catch (Exception ex)
         {
@@ -140,23 +194,14 @@ public sealed class RabbitMqHistoryConsumer : BackgroundService
             if (currentRetryCount < _options.MaxRetryCount)
             {
                 var nextRetryCount = currentRetryCount + 1;
-                var retryProperties = _channel.CreateBasicProperties();
-                retryProperties.Persistent = args.BasicProperties?.Persistent ?? true;
-                retryProperties.ContentType = args.BasicProperties?.ContentType;
-                retryProperties.ContentEncoding = args.BasicProperties?.ContentEncoding;
-                retryProperties.CorrelationId = args.BasicProperties?.CorrelationId;
-                retryProperties.MessageId = args.BasicProperties?.MessageId;
-                retryProperties.Type = args.BasicProperties?.Type;
-                retryProperties.Timestamp = args.BasicProperties?.Timestamp ?? default;
-                retryProperties.Headers = CopyHeaders(args.BasicProperties?.Headers);
-                retryProperties.Headers[RetryHeaderName] = nextRetryCount;
-
-                _channel.BasicPublish(
-                    exchange: string.Empty,
-                    routingKey: _options.QueueName,
-                    mandatory: false,
-                    basicProperties: retryProperties,
-                    body: args.Body);
+                if (!TryRepublishForRetry(args, nextRetryCount))
+                {
+                    _logger.LogError(
+                        ex,
+                        "Could not republish history event for retry because RabbitMQ is unavailable. Message will be requeued.");
+                    SafeNack(args.DeliveryTag, requeue: true);
+                    return;
+                }
 
                 _logger.LogError(
                     ex,
@@ -164,7 +209,7 @@ public sealed class RabbitMqHistoryConsumer : BackgroundService
                     nextRetryCount,
                     _options.MaxRetryCount);
 
-                _channel.BasicAck(deliveryTag: args.DeliveryTag, multiple: false);
+                SafeAck(args.DeliveryTag);
                 return;
             }
 
@@ -172,7 +217,7 @@ public sealed class RabbitMqHistoryConsumer : BackgroundService
                 ex,
                 "Error while processing history event; max retries reached ({MaxRetryCount}). Message will be rejected without requeue.",
                 _options.MaxRetryCount);
-            _channel.BasicNack(deliveryTag: args.DeliveryTag, multiple: false, requeue: false);
+            SafeNack(args.DeliveryTag, requeue: false);
         }
     }
 
@@ -216,11 +261,82 @@ public sealed class RabbitMqHistoryConsumer : BackgroundService
         };
     }
 
+    private bool TryRepublishForRetry(BasicDeliverEventArgs args, int nextRetryCount)
+    {
+        if (_channel is not { IsOpen: true })
+        {
+            return false;
+        }
+
+        try
+        {
+            var retryProperties = _channel.CreateBasicProperties();
+            retryProperties.Persistent = args.BasicProperties?.Persistent ?? true;
+            retryProperties.ContentType = args.BasicProperties?.ContentType;
+            retryProperties.ContentEncoding = args.BasicProperties?.ContentEncoding;
+            retryProperties.CorrelationId = args.BasicProperties?.CorrelationId;
+            retryProperties.MessageId = args.BasicProperties?.MessageId;
+            retryProperties.Type = args.BasicProperties?.Type;
+            retryProperties.Timestamp = args.BasicProperties?.Timestamp ?? default;
+            retryProperties.Headers = CopyHeaders(args.BasicProperties?.Headers);
+            retryProperties.Headers[RetryHeaderName] = nextRetryCount;
+
+            _channel.BasicPublish(
+                exchange: string.Empty,
+                routingKey: _options.QueueName,
+                mandatory: false,
+                basicProperties: retryProperties,
+                body: args.Body);
+            return true;
+        }
+        catch (Exception republishEx)
+        {
+            _logger.LogError(republishEx, "Could not republish message for retry.");
+            return false;
+        }
+    }
+
+    private void SafeAck(ulong deliveryTag)
+    {
+        if (_channel is not { IsOpen: true })
+        {
+            _logger.LogWarning("Skipping ACK for message {DeliveryTag} because channel is not open.", deliveryTag);
+            return;
+        }
+
+        try
+        {
+            _channel.BasicAck(deliveryTag: deliveryTag, multiple: false);
+            _logger.LogDebug("Message acknowledged {DeliveryTag}", deliveryTag);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not ACK message {DeliveryTag}.", deliveryTag);
+        }
+    }
+
+    private void SafeNack(ulong deliveryTag, bool requeue)
+    {
+        if (_channel is not { IsOpen: true })
+        {
+            _logger.LogWarning("Skipping NACK for message {DeliveryTag} because channel is not open.", deliveryTag);
+            return;
+        }
+
+        try
+        {
+            _channel.BasicNack(deliveryTag: deliveryTag, multiple: false, requeue: requeue);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not NACK message {DeliveryTag}.", deliveryTag);
+        }
+    }
+
     public override void Dispose()
     {
         _logger.LogInformation("Disposing RabbitMQ history consumer");
-        _channel?.Dispose();
-        _connection?.Dispose();
+        CloseConnection();
         base.Dispose();
     }
 }

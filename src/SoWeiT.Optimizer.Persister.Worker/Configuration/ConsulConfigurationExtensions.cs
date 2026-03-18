@@ -2,51 +2,89 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Winton.Extensions.Configuration.Consul;
 
-namespace SoWeiT.Optimizer.Api.Configuration;
+namespace SoWeiT.Optimizer.Persister.Worker.Configuration;
 
 internal static class ConsulConfigurationExtensions
 {
-    public static void AddConsulConfiguration(this ConfigurationManager configuration, IHostEnvironment environment)
-    {
-        var bootstrap = configuration.GetSection("Consul").Get<ConsulBootstrapOptions>() ?? new ConsulBootstrapOptions();
-        var address = new Uri(bootstrap.Address, UriKind.Absolute);
-        var key = ResolveKey(bootstrap, environment);
+    private const string ConsulUrlEnvironmentVariable = "CONSUL_URL";
+    private const string RootKeyPrefix = "DLTannhausen";
 
-        configuration.AddConsul(
-            key,
-            options =>
-            {
-                options.ConsulConfigurationOptions = consul => { consul.Address = address; };
-                options.Optional = bootstrap.Optional;
-                options.ReloadOnChange = bootstrap.ReloadOnChange;
-                options.OnLoadException = context => { context.Ignore = bootstrap.Optional; };
-            });
-    }
-
-    private static string ResolveKey(ConsulBootstrapOptions options, IHostEnvironment environment)
+    public static ConsulLoadResult AddConsulConfiguration(this ConfigurationManager configuration, IHostEnvironment environment)
     {
-        if (!string.IsNullOrWhiteSpace(options.Key))
+        var consulUrl = Environment.GetEnvironmentVariable(ConsulUrlEnvironmentVariable);
+        if (string.IsNullOrWhiteSpace(consulUrl))
         {
-            return options.Key.Trim('/');
+            throw new InvalidOperationException(
+                $"Environment variable '{ConsulUrlEnvironmentVariable}' is required.");
         }
 
-        var prefix = string.IsNullOrWhiteSpace(options.KeyPrefix)
-            ? "DLTannhausen"
-            : options.KeyPrefix.Trim('/');
+        if (!Uri.TryCreate(consulUrl, UriKind.Absolute, out var address))
+        {
+            throw new InvalidOperationException(
+                $"Environment variable '{ConsulUrlEnvironmentVariable}' must contain an absolute URL.");
+        }
 
-        return $"{prefix}/{environment.ApplicationName}/{environment.EnvironmentName}";
+        var keys = GetKeys(environment.ApplicationName);
+        var result = new ConsulLoadResult(ConsulUrlEnvironmentVariable, address, keys);
+
+        foreach (var key in keys)
+        {
+            configuration.AddConsul(
+                key,
+                options =>
+                {
+                    options.Optional = true;
+                    options.ReloadOnChange = true;
+                    options.ConsulConfigurationOptions = consul => { consul.Address = address; };
+                    options.OnLoadException = context =>
+                    {
+                        result.RecordFailure(key, context.Exception);
+                        context.Ignore = true;
+                    };
+                });
+        }
+
+        return result;
     }
 
-    private sealed class ConsulBootstrapOptions
+    private static string[] GetKeys(string applicationName)
     {
-        public string Address { get; init; } = "http://localhost:8500";
-
-        public string? Key { get; init; }
-
-        public string KeyPrefix { get; init; } = "DLTannhausen";
-
-        public bool Optional { get; init; }
-
-        public bool ReloadOnChange { get; init; } = true;
+        var prefix = $"{RootKeyPrefix}/{applicationName}";
+        return
+        [
+            $"{prefix}/serilog.json",
+            $"{prefix}/connectionStrings.json",
+            $"{prefix}/rabbitMq.json"
+        ];
     }
+
+    internal sealed class ConsulLoadResult(
+        string environmentVariableName,
+        Uri address,
+        IReadOnlyList<string> keys)
+    {
+        private readonly List<ConsulLoadFailure> _failures = [];
+
+        public string EnvironmentVariableName { get; } = environmentVariableName;
+
+        public Uri Address { get; } = address;
+
+        public IReadOnlyList<string> Keys { get; } = keys;
+
+        public IReadOnlyList<ConsulLoadFailure> Failures => _failures;
+
+        public bool HasFailures => _failures.Count > 0;
+
+        public void RecordFailure(string key, Exception exception)
+        {
+            if (_failures.Any(x => string.Equals(x.Key, key, StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+
+            _failures.Add(new ConsulLoadFailure(key, exception));
+        }
+    }
+
+    internal sealed record ConsulLoadFailure(string Key, Exception Exception);
 }

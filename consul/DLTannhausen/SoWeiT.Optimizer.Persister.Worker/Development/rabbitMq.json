@@ -1,0 +1,11 @@
+{
+  "RabbitMq": {
+    "HostName": "localhost",
+    "Port": 5672,
+    "UserName": "admin",
+    "Password": "admin",
+    "VirtualHost": "/",
+    "QueueName": "optimizer.history",
+    "MaxRetryCount": 5
+  }
+}

@@ -1,12 +1,16 @@
-﻿{
-  "$schema": "https://json.schemastore.org/launchsettings.json",
+{
   "profiles": {
     "SoWeiT.Optimizer.Persister.Worker": {
       "commandName": "Project",
-      "dotnetRunMessages": true,
       "environmentVariables": {
-        "DOTNET_ENVIRONMENT": "Development"
-      }
+        "DOTNET_ENVIRONMENT": "Development",
+        "CONSUL_URL": "http://localhost:8500"
+      },
+      "dotnetRunMessages": true
+    },
+    "Container (Dockerfile)": {
+      "commandName": "Docker"
     }
-  }
+  },
+  "$schema": "https://json.schemastore.org/launchsettings.json"
 }

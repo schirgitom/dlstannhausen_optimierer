@@ -1,0 +1,8 @@
+{
+  "OptimizerSessionRecovery": {
+    "Sperrzeit1": 300,
+    "Sperrzeit2": 60,
+    "UseOrTools": true,
+    "UseGreedyFallback": false
+  }
+}

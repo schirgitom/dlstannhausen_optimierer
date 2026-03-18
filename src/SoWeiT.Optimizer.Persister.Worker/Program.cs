@@ -1,82 +1,33 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Serilog;
-using SoWeiT.Optimizer.Api.Configuration;
+using SoWeiT.Optimizer.Persister.Worker.Configuration;
 using SoWeiT.Optimizer.Persistence.History.Data;
 using SoWeiT.Optimizer.Persistence.History.Persistence;
 using SoWeiT.Optimizer.Persister.Worker;
-using Winton.Extensions.Configuration.Consul;
 
-var builder = WebApplication.CreateBuilder(args);
+var builder = Host.CreateApplicationBuilder(args);
+Log.Logger = CreateConsoleLogger();
 
-builder.Configuration.AddConsulConfiguration(builder.Environment);
+var consulLoadResult = builder.Configuration.AddConsulConfiguration(builder.Environment);
 
-Log.Logger = new LoggerConfiguration()
-    .ReadFrom.Configuration(builder.Configuration)
-    .Enrich.FromLogContext()
-    .WriteTo.Console()
-    .CreateLogger();
-
-builder.Host.UseSerilog();
-var consulAddress = builder.Configuration["Consul:Address"];
-var consulKeyPrefix = builder.Configuration["Consul:KeyPrefix"] ?? "soweit/optimizer/persister";
-
-if (!string.IsNullOrWhiteSpace(consulAddress))
-{
-    builder.Configuration.AddConsul(
-        $"{consulKeyPrefix}/appsettings.json",
-        options =>
-        {
-            options.Optional = true;
-            options.ReloadOnChange = true;
-            options.ConsulConfigurationOptions = consulOptions =>
-            {
-                consulOptions.Address = new Uri(consulAddress);
-            };
-        });
-
-    builder.Configuration.AddConsul(
-        $"{consulKeyPrefix}/appsettings.{builder.Environment.EnvironmentName}.json",
-        options =>
-        {
-            options.Optional = true;
-            options.ReloadOnChange = true;
-            options.ConsulConfigurationOptions = consulOptions =>
-            {
-                consulOptions.Address = new Uri(consulAddress);
-            };
-        });
-}
+ReportConsulLoadIssues(consulLoadResult);
+ValidateRequiredConfiguration(
+    builder.Configuration,
+    [
+        "ConnectionStrings:Postgres",
+        "RabbitMq:HostName",
+        "RabbitMq:Port",
+        "RabbitMq:UserName",
+        "RabbitMq:Password",
+        "RabbitMq:VirtualHost",
+        "RabbitMq:QueueName",
+        "RabbitMq:MaxRetryCount"
+    ]);
 
 builder.Services.AddSerilog((services, loggerConfiguration) =>
 {
-    loggerConfiguration
-        .ReadFrom.Services(services)
-        .Enrich.FromLogContext();
-
-    try
-    {
-        var serilogSection = builder.Configuration.GetSection("Serilog");
-        var hasSerilogSection = serilogSection.Exists();
-        var hasWriteTo = serilogSection.GetSection("WriteTo").GetChildren().Any();
-
-        if (!hasSerilogSection || !hasWriteTo)
-        {
-            loggerConfiguration
-                .MinimumLevel.Information()
-                .WriteTo.Console(outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss} {Level:u3}] {SourceContext} {Message:lj}{NewLine}{Exception}");
-            return;
-        }
-
-        loggerConfiguration.ReadFrom.Configuration(builder.Configuration);
-    }
-    catch (Exception ex)
-    {
-        loggerConfiguration
-            .MinimumLevel.Information()
-            .WriteTo.Console(outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss} {Level:u3}] {SourceContext} {Message:lj}{NewLine}{Exception}");
-        Console.Error.WriteLine($"Serilog configuration is invalid; using console fallback. {ex.Message}");
-    }
+    ConfigureSerilog(loggerConfiguration, services, builder.Configuration, consulLoadResult);
 });
 
 builder.Services.AddDbContextFactory<OptimizerHistoryDbContext>(options =>
@@ -95,12 +46,116 @@ var startupLogger = host.Services.GetRequiredService<ILoggerFactory>().CreateLog
 
 using (var scope = host.Services.CreateScope())
 {
-    var dbFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<OptimizerHistoryDbContext>>();
-    using var dbContext = dbFactory.CreateDbContext();
-    startupLogger.LogInformation("Applying database migrations");
-    dbContext.Database.Migrate();
-    startupLogger.LogInformation("Database migrations applied");
+    try
+    {
+        var dbFactory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<OptimizerHistoryDbContext>>();
+        using var dbContext = dbFactory.CreateDbContext();
+        startupLogger.LogInformation("Applying database migrations");
+        dbContext.Database.Migrate();
+        startupLogger.LogInformation("Database migrations applied");
+    }
+    catch (Exception ex)
+    {
+        startupLogger.LogError(
+            ex,
+            "Database is currently not reachable. Worker continues running and retries persistence when messages are processed.");
+    }
 }
 
 startupLogger.LogInformation("Starting host");
 host.Run();
+
+static Serilog.ILogger CreateConsoleLogger()
+{
+    return new LoggerConfiguration()
+        .MinimumLevel.Information()
+        .Enrich.FromLogContext()
+        .WriteTo.Console(outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss} {Level:u3}] {SourceContext} {Message:lj}{NewLine}{Exception}")
+        .CreateLogger();
+}
+
+static void ConfigureSerilog(
+    LoggerConfiguration loggerConfiguration,
+    IServiceProvider services,
+    IConfiguration configuration,
+    ConsulConfigurationExtensions.ConsulLoadResult consulLoadResult)
+{
+    loggerConfiguration
+        .MinimumLevel.Information()
+        .ReadFrom.Services(services)
+        .Enrich.FromLogContext()
+        .WriteTo.Console(outputTemplate: "[{Timestamp:yyyy-MM-dd HH:mm:ss} {Level:u3}] {SourceContext} {Message:lj}{NewLine}{Exception}");
+
+    ConfigureOptionalSeqSink(loggerConfiguration, configuration);
+
+    if (consulLoadResult.HasFailures)
+    {
+        return;
+    }
+
+    var serilogSection = configuration.GetSection("Serilog");
+    if (!serilogSection.Exists())
+    {
+        return;
+    }
+
+    try
+    {
+        loggerConfiguration.ReadFrom.Configuration(configuration);
+    }
+    catch (Exception ex)
+    {
+        Log.Warning(ex, "Serilog configuration from Consul/local config is invalid. Keeping console + optional Seq defaults.");
+    }
+}
+
+static void ConfigureOptionalSeqSink(LoggerConfiguration loggerConfiguration, IConfiguration configuration)
+{
+    var seqServerUrl = configuration["Seq:ServerUrl"];
+    if (string.IsNullOrWhiteSpace(seqServerUrl))
+    {
+        return;
+    }
+
+    var seqApiKey = configuration["Seq:ApiKey"];
+    loggerConfiguration.WriteTo.Seq(
+        serverUrl: seqServerUrl,
+        apiKey: string.IsNullOrWhiteSpace(seqApiKey) ? null : seqApiKey);
+}
+
+static void ReportConsulLoadIssues(ConsulConfigurationExtensions.ConsulLoadResult consulLoadResult)
+{
+    if (!consulLoadResult.HasFailures)
+    {
+        Log.Information(
+            "Loaded application configuration from Consul {ConsulAddress} using keys: {ConsulKeys}",
+            consulLoadResult.Address,
+            string.Join(", ", consulLoadResult.Keys));
+        return;
+    }
+
+    foreach (var failure in consulLoadResult.Failures)
+    {
+        Log.Warning(
+            failure.Exception,
+            "Could not load Consul key {ConsulKey} from {ConsulAddress}. Console logging fallback remains active.",
+            failure.Key,
+            consulLoadResult.Address);
+    }
+}
+
+static void ValidateRequiredConfiguration(IConfiguration configuration, IEnumerable<string> requiredKeys)
+{
+    var missingKeys = requiredKeys
+        .Where(key => string.IsNullOrWhiteSpace(configuration[key]) && !configuration.GetSection(key).Exists())
+        .Distinct()
+        .ToArray();
+
+    if (missingKeys.Length == 0)
+    {
+        return;
+    }
+
+    throw new InvalidOperationException(
+        $"Missing required configuration values: {string.Join(", ", missingKeys)}");
+}
