@@ -125,6 +125,12 @@ static void ConfigureOptionalSeqSink(LoggerConfiguration loggerConfiguration, IC
 
 static void ReportConsulLoadIssues(ConsulConfigurationExtensions.ConsulLoadResult consulLoadResult)
 {
+    if (!consulLoadResult.IsEnabled)
+    {
+        Log.Information("Consul configuration is disabled. Using appsettings and environment variables only.");
+        return;
+    }
+
     if (!consulLoadResult.HasFailures)
     {
         Log.Information(

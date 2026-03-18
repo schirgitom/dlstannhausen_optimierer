@@ -1,6 +1,16 @@
 ## Consul layout
 
-The applications read configuration only from Consul. The only required environment variable is `CONSUL_URL`.
+The applications can read configuration from `appsettings*.json`, environment variables and optionally Consul.
+Consul is controlled through:
+
+- `Consul:Enabled` (env: `Consul__Enabled`)
+- `Consul:Url` (env: `Consul__Url`, legacy fallback: `CONSUL_URL`)
+- `Consul:RootKeyPrefix` (env: `Consul__RootKeyPrefix`, optional, default: `DLTannhausen`)
+
+Default behavior:
+
+- If `Consul:Enabled` is set, that value is used.
+- If `Consul:Enabled` is not set, Consul is enabled automatically only when `Consul:Url` or `CONSUL_URL` is present.
 
 Key prefix pattern:
 
