@@ -9,7 +9,17 @@ using StackExchange.Redis;
 var builder = WebApplication.CreateBuilder(args);
 Log.Logger = CreateConsoleLogger();
 
+builder.Configuration.Sources.Clear();
+builder.Configuration
+    .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+    .AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.json", optional: true, reloadOnChange: true);
+
 var consulLoadResult = builder.Configuration.AddConsulConfiguration(builder.Environment);
+builder.Configuration.AddEnvironmentVariables();
+if (args is { Length: > 0 })
+{
+    builder.Configuration.AddCommandLine(args);
+}
 
 builder.Host.UseSerilog((context, services, loggerConfiguration) =>
 {
@@ -122,6 +132,13 @@ static void ConfigureOptionalSeqSink(LoggerConfiguration loggerConfiguration, IC
 
 static void ReportConsulLoadIssues(ConsulConfigurationExtensions.ConsulLoadResult consulLoadResult)
 {
+    if (!consulLoadResult.Enabled)
+    {
+        Log.Information(
+            "Consul configuration is disabled. Using appsettings and environment variables only.");
+        return;
+    }
+
     if (!consulLoadResult.HasFailures)
     {
         Log.Information(

@@ -7,21 +7,21 @@ namespace SoWeiT.Optimizer.Api.Configuration;
 internal static class ConsulConfigurationExtensions
 {
     private const string ConsulUrlEnvironmentVariable = "CONSUL_URL";
+    private const string ConsulUrlSectionKey = "Consul:Url";
     private const string RootKeyPrefix = "DLTannhausen";
 
     public static ConsulLoadResult AddConsulConfiguration(this ConfigurationManager configuration, IHostEnvironment environment)
     {
-        var consulUrl = Environment.GetEnvironmentVariable(ConsulUrlEnvironmentVariable);
+        var consulUrl = ResolveConsulUrl(configuration);
         if (string.IsNullOrWhiteSpace(consulUrl))
         {
-            throw new InvalidOperationException(
-                $"Environment variable '{ConsulUrlEnvironmentVariable}' is required.");
+            return ConsulLoadResult.Disabled(ConsulUrlEnvironmentVariable);
         }
 
         if (!Uri.TryCreate(consulUrl, UriKind.Absolute, out var address))
         {
             throw new InvalidOperationException(
-                $"Environment variable '{ConsulUrlEnvironmentVariable}' must contain an absolute URL.");
+                $"Consul URL is invalid. Set '{ConsulUrlEnvironmentVariable}' or '{ConsulUrlSectionKey}' with an absolute URL.");
         }
 
         var keys = GetKeys(environment.ApplicationName);
@@ -45,6 +45,23 @@ internal static class ConsulConfigurationExtensions
         }
 
         return result;
+    }
+
+    private static string? ResolveConsulUrl(IConfiguration configuration)
+    {
+        var envValue = Environment.GetEnvironmentVariable(ConsulUrlEnvironmentVariable);
+        if (!string.IsNullOrWhiteSpace(envValue))
+        {
+            return envValue;
+        }
+
+        var standardEnvValue = Environment.GetEnvironmentVariable("Consul__Url");
+        if (!string.IsNullOrWhiteSpace(standardEnvValue))
+        {
+            return standardEnvValue;
+        }
+
+        return configuration[ConsulUrlSectionKey];
     }
 
     private static string[] GetKeys(string applicationName)
@@ -77,6 +94,19 @@ internal static class ConsulConfigurationExtensions
         public IReadOnlyList<ConsulLoadFailure> Failures => _failures;
 
         public bool HasFailures => _failures.Count > 0;
+
+        public bool Enabled { get; } = true;
+
+        private ConsulLoadResult(string environmentVariableName)
+            : this(environmentVariableName, new Uri("http://localhost"), [])
+        {
+            Enabled = false;
+        }
+
+        public static ConsulLoadResult Disabled(string environmentVariableName)
+        {
+            return new ConsulLoadResult(environmentVariableName);
+        }
 
         public void RecordFailure(string key, Exception exception)
         {

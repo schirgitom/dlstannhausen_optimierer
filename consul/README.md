@@ -1,6 +1,14 @@
 ## Consul layout
 
-The applications read configuration only from Consul. The only required environment variable is `CONSUL_URL`.
+The API supports layered configuration with this precedence (highest to lowest):
+
+1. Environment variables
+2. Consul KV
+3. `appsettings*.json`
+
+Consul is optional for the API. To enable Consul loading, set `CONSUL_URL` (or `Consul:Url` in appsettings).
+
+The Persister Worker still reads runtime configuration from Consul and expects `CONSUL_URL`.
 
 Key prefix pattern:
 
