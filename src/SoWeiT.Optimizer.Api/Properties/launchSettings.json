@@ -6,7 +6,20 @@
       "launchUrl": "swagger",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development",
-        "CONSUL_URL": "http://localhost:8500"
+        "CONSUL_URL": "http://localhost:8500",
+        "ConnectionStrings__Redis": "localhost:6379",
+        "RabbitMq__HostName" : "localhost",
+        "RabbitMq__Port": 5672,
+        "RabbitMq__UserName": "admin",
+        "RabbitMq__Password": "admin",
+        "RabbitMq__VirtualHost" : "/",
+        "RabbitMq__QueueName": "optimizer.history",
+        "OptimizerStateStore__SessionTtlMinutes": 720,
+        "OptimizerSessionRecovery__Sperrzeit1": 300,
+        "OptimizerSessionRecovery__Sperrzeit2": 60,
+        "OptimizerSessionRecovery__UseOrTools": true,
+        "OptimizerSessionRecovery__UseGreedyFallback": false,
+        "AllowedHosts": "*"
       },
       "dotnetRunMessages": true,
       "applicationUrl": "http://localhost:5027"
