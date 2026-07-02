@@ -26,7 +26,9 @@ public sealed record UpdateVerteilungMittelsEnergieRequest(double[] PvVerbrauchE
 
 public sealed record PrepareDataRequest(double[] Verbrauch);
 
-public sealed record RunResponse(double[] Schaltzustand, double[] ResOpt, double[] Messwerte);
+public sealed record RunResponseItem(string Kundennummer, double Schaltzustand, double ResOpt, double Messwerte);
+
+public sealed record RunResponse(List<RunResponseItem> Ergebnisse);
 
 public sealed record OptimizerStateResponse(
     int N,

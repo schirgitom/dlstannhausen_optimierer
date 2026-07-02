@@ -256,6 +256,17 @@ public sealed class OptimizerSessionService
             return true;
         }
 
+        if (requiredPowerWatt.Length != optimizer.N)
+        {
+            _logger.LogWarning(
+                "User count changed: session N={SessionN}, request N={RequestN}. Session {SessionId} will be replaced.",
+                optimizer.N,
+                requiredPowerWatt.Length,
+                sessionId);
+            Delete(sessionId);
+            return false;
+        }
+
         var result = optimizer.Run(request.PvErzeugungWatt, requiredPowerWatt, request.Zeitstempel);
         var pvVerbrauchEnergieStand = optimizer.PvVerbrauchEnergieStand?.ToArray() ?? new double[optimizer.N];
         var verbrauchEnergieStand = optimizer.VerbrauchEnergieStand?.ToArray() ?? new double[optimizer.N];
@@ -276,7 +287,13 @@ public sealed class OptimizerSessionService
             CalculateConsumedPower(runUsers),
             CalculateTotalRequiredPower(runUsers),
             runUsers);
-        response = new RunResponse(result.Schaltzustand, result.ResOpt, result.ResOpt);
+        var items = new List<RunResponseItem>(customers.Length);
+        for (var i = 0; i < customers.Length; i++)
+        {
+            items.Add(new RunResponseItem(customers[i], result.Schaltzustand[i], result.ResOpt[i], result.ResOpt[i]));
+        }
+
+        response = new RunResponse(items);
         return true;
     }
 

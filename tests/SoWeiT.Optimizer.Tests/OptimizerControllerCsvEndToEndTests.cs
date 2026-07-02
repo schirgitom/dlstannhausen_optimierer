@@ -97,16 +97,16 @@ public sealed class OptimizerControllerCsvEndToEndTests
                 var runOk = Assert.IsType<OkObjectResult>(runResult.Result);
                 var runResponse = Assert.IsType<RunResponse>(runOk.Value);
 
-                Assert.Equal(userCount, runResponse.Schaltzustand.Length);
-                Assert.Equal(userCount, runResponse.ResOpt.Length);
+                Assert.Equal(userCount, runResponse.Ergebnisse.Count);
 
                 var assigned = 0.0;
                 for (var i = 0; i < userCount; i++)
                 {
-                    Assert.True(runResponse.Schaltzustand[i] is 0.0 or 1.0, $"Schaltzustand muss 0 oder 1 sein (row {rowCount + 1}, user {i + 1}).");
-                    Assert.True(runResponse.ResOpt[i] >= -1e-9, $"ResOpt darf nicht negativ sein (row {rowCount + 1}, user {i + 1}).");
-                    Assert.True(runResponse.ResOpt[i] <= verbrauch[i] + 1e-9, $"ResOpt darf Verbrauch nicht ueberschreiten (row {rowCount + 1}, user {i + 1}).");
-                    assigned += runResponse.ResOpt[i];
+                    var item = runResponse.Ergebnisse[i];
+                    Assert.True(item.Schaltzustand is 0.0 or 1.0, $"Schaltzustand muss 0 oder 1 sein (row {rowCount + 1}, user {i + 1}).");
+                    Assert.True(item.ResOpt >= -1e-9, $"ResOpt darf nicht negativ sein (row {rowCount + 1}, user {i + 1}).");
+                    Assert.True(item.ResOpt <= verbrauch[i] + 1e-9, $"ResOpt darf Verbrauch nicht ueberschreiten (row {rowCount + 1}, user {i + 1}).");
+                    assigned += item.ResOpt;
                 }
 
                 Assert.True(assigned <= pv + 1e-6, $"Summierte Zuweisung darf PV nicht ueberschreiten (row {rowCount + 1}).");
@@ -178,8 +178,7 @@ public sealed class OptimizerControllerCsvEndToEndTests
 
             var runOk = Assert.IsType<OkObjectResult>(runResult.Result);
             var runResponse = Assert.IsType<RunResponse>(runOk.Value);
-            Assert.Equal(3, runResponse.Schaltzustand.Length);
-            Assert.Equal(3, runResponse.ResOpt.Length);
+            Assert.Equal(3, runResponse.Ergebnisse.Count);
 
             Assert.True(controller.Response.Headers.TryGetValue("X-Optimizer-Session-Id", out var sessionHeader));
             Assert.True(Guid.TryParse(sessionHeader.ToString(), out recoveredSessionId));
