@@ -1,0 +1,123 @@
+CREATE OR REPLACE VIEW v_Active_Sessions AS
+SELECT "SessionId", "CreatedAtUtc"  AT TIME ZONE 'Europe/Vienna', to_char("CreatedAtUtc"  AT TIME ZONE 'Europe/Vienna',
+                                                                          'DD.MM.YYYY HH24:MI:SS'
+                                                                  ) as "DateFormatted" , "N", "Sperrzeit1", "Sperrzeit2"  from optimizer_sessions where "EndedAtUtc" is null;
+                                                                  
+                                                                  
+               CREATE OR REPLACE VIEW v_last_session_entries AS
+               SELECT DISTINCT ON ("SessionId")
+                   "Id",
+                   "SessionId",
+                   "RequestType",
+                   "RequestTimestamp",
+                   "CreatedAtUtc",
+                   "AvailablePvPowerWatt",
+                   "ConsumedPowerWatt",
+                   "TotalRequiredPowerWatt",
+                   COUNT(*) OVER (
+                       PARTITION BY "SessionId"
+                       ) AS "EntryCount"
+               FROM optimizer_requests
+               ORDER BY
+                   "SessionId",
+                   "RequestTimestamp" DESC NULLS LAST,
+                   "Id" DESC;
+                   
+ CREATE VIEW v_active_session_metrics AS
+ SELECT ls."SessionId", en."Id", ls."N", ls."Sperrzeit1", ls."Sperrzeit2",  en."RequestType", en."RequestTimestamp", to_char("CreatedAtUtc"  AT TIME ZONE 'Europe/Vienna',
+                                                                           'DD.MM.YYYY HH24:MI:SS'
+                                                                   ) "RequestFormatted" , en."AvailablePvPowerWatt", en."ConsumedPowerWatt", en."TotalRequiredPowerWatt", en."EntryCount" from v_active_sessions ls
+ INNER JOIN v_last_session_entries en on ls."SessionId" = en."SessionId"
+ 
+                  
+ CREATE OR REPLACE VIEW v_last_optimizer_request_users AS
+ SELECT ur."CustomerId", c."Name", ur."RequiredPowerWatt", ur."IsSwitchAllowed", ur."FairnessFactor", ur."SwitchBudget", ur."ShouldSwitch" from optimizer_request_users ur 
+ INNER JOIN v_last_session_entries lse on lse."Id" = ur."RequestEntryId"
+ INNER JOIN v_active_sessions acs on acs."SessionId" = lse."SessionId"
+ INNER JOIN public.customers c on ur."CustomerId" = c."Id"             
+ 
+ 
+ CREATE OR REPLACE VIEW v_active_session_switch AS
+ SELECT
+     r."RequestTimestamp" AS "Timestamp",
+     r."Id"               AS "RequestId",
+     r."RequestType",
+     ru."UserIndex",
+     c."Name"             AS "CustomerName",
+     c."CustomerNumber",
+     ru."RequiredPowerWatt",
+     ru."IsSwitchAllowed",
+     ru."ShouldSwitch"    AS "Schaltzustand"
+ FROM v_active_sessions s
+          JOIN optimizer_requests r
+               ON r."SessionId" = s."SessionId"
+          JOIN optimizer_request_users ru
+               ON ru."RequestEntryId" = r."Id"
+          JOIN customers c
+               ON c."Id" = ru."CustomerId"
+ ORDER BY r."RequestTimestamp", r."Id", ru."UserIndex";     
+ 
+ 
+ CREATE VIEW v_active_sessions_required AS
+ SELECT
+     r."RequestTimestamp" AS "Timestamp",
+     r."Id"               AS "RequestId",
+     r."AvailablePvPowerWatt" AS "AvailablePowerWatt",
+     SUM(ru."RequiredPowerWatt") FILTER (WHERE ru."IsSwitchAllowed") AS "RequiredPowerAllowed"
+ FROM v_active_sessions s
+          JOIN optimizer_requests r
+               ON r."SessionId" = s."SessionId"
+          JOIN optimizer_request_users ru
+               ON ru."RequestEntryId" = r."Id"
+ GROUP BY r."RequestTimestamp", r."Id", r."AvailablePvPowerWatt"
+ ORDER BY r."RequestTimestamp", r."Id";
+ 
+ 
+ CREATE MATERIALIZED VIEW mv_session_customer_switches AS
+ SELECT
+     s."SessionId",
+     r."RequestTimestamp" AS "Timestamp",
+     r."Id" AS "RequestId",
+     r."AvailablePvPowerWatt" AS "AvailablePowerWatt",
+ 
+     COALESCE(MAX(ru."RequiredPowerWatt") FILTER (WHERE c."Name" = 'Kunde 1'), 0) AS "Kunde 1 - Benötigt",
+     COALESCE(bool_or(ru."ShouldSwitch") FILTER (WHERE c."Name" = 'Kunde 1'), false) AS "Kunde 1 - Schalten",
+ 
+     COALESCE(MAX(ru."RequiredPowerWatt") FILTER (WHERE c."Name" = 'Kunde 2'), 0) AS "Kunde 2 - Benötigt",
+     COALESCE(bool_or(ru."ShouldSwitch") FILTER (WHERE c."Name" = 'Kunde 2'), false) AS "Kunde 2 - Schalten",
+ 
+     COALESCE(MAX(ru."RequiredPowerWatt") FILTER (WHERE c."Name" = 'Kunde 3'), 0) AS "Kunde 3 - Benötigt",
+     COALESCE(bool_or(ru."ShouldSwitch") FILTER (WHERE c."Name" = 'Kunde 3'), false) AS "Kunde 3 - Schalten",
+ 
+     COALESCE(MAX(ru."RequiredPowerWatt") FILTER (WHERE c."Name" = 'Kunde 4'), 0) AS "Kunde 4 - Benötigt",
+     COALESCE(bool_or(ru."ShouldSwitch") FILTER (WHERE c."Name" = 'Kunde 4'), false) AS "Kunde 4 - Schalten",
+ 
+     COALESCE(MAX(ru."RequiredPowerWatt") FILTER (WHERE c."Name" = 'Kunde 5'), 0) AS "Kunde 5 - Benötigt",
+     COALESCE(bool_or(ru."ShouldSwitch") FILTER (WHERE c."Name" = 'Kunde 5'), false) AS "Kunde 5 - Schalten",
+ 
+     COALESCE(MAX(ru."RequiredPowerWatt") FILTER (WHERE c."Name" = 'Kunde 6'), 0) AS "Kunde 6 - Benötigt",
+     COALESCE(bool_or(ru."ShouldSwitch") FILTER (WHERE c."Name" = 'Kunde 6'), false) AS "Kunde 6 - Schalten",
+ 
+     COALESCE(MAX(ru."RequiredPowerWatt") FILTER (WHERE c."Name" = 'Kunde 7'), 0) AS "Kunde 7 - Benötigt",
+     COALESCE(bool_or(ru."ShouldSwitch") FILTER (WHERE c."Name" = 'Kunde 7'), false) AS "Kunde 7 - Schalten"
+ 
+ FROM optimizer_sessions s
+          JOIN optimizer_requests r
+               ON r."SessionId" = s."SessionId"
+          JOIN optimizer_request_users ru
+               ON ru."RequestEntryId" = r."Id"
+          JOIN customers c
+               ON c."Id" = ru."CustomerId"
+ GROUP BY
+     s."SessionId",
+     r."RequestTimestamp",
+     r."Id",
+     r."AvailablePvPowerWatt";
+ 
+ CREATE INDEX ix_mv_session_customer_switches_sessionid
+     ON mv_session_customer_switches ("SessionId");
+ 
+ CREATE INDEX ix_mv_session_customer_switches_timestamp
+     ON mv_session_customer_switches ("Timestamp");
+ 
+ REFRESH MATERIALIZED VIEW mv_session_customer_switches;

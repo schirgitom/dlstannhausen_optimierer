@@ -6,10 +6,11 @@ public sealed class PersistedOptimizerSession
 {
     public required Guid SessionId { get; init; }
 
+    public DateTime CreatedAtUtc { get; init; }
+
     public required bool UseOrTools { get; init; }
 
     public required bool UseGreedyFallback { get; init; }
 
     public required OptimiererStateSnapshot Snapshot { get; init; }
 }
-

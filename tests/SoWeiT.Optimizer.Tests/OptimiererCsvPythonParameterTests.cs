@@ -77,13 +77,13 @@ public sealed class OptimiererCsvPythonParameterTests
             Assert.True(service.TryGet(sessionId, out var opt1));
             Assert.NotNull(opt1);
 
-            opt1!.UpdateVerteilungMittelsEnergie(pvVerbrauchEnergieStand, verbrauchEnergieStand);
+            opt1!.Optimizer.UpdateVerteilungMittelsEnergie(pvVerbrauchEnergieStand, verbrauchEnergieStand);
             service.PersistMutation(
                 sessionId,
-                opt1,
+                opt1.Optimizer,
                 "update_verteilung_mittels_energie",
                 DateTimeOffset.UtcNow,
-                opt1.Erzeugung);
+                opt1.Optimizer.Erzeugung);
 
             for (var j = 0; j < simDauer; j++)
             {
@@ -99,10 +99,10 @@ public sealed class OptimiererCsvPythonParameterTests
                 var pv = Parse(parts[7]);
 
                 zeitstempel = zeitstempel.Add(step);
-                var result = opt1.Run(pv, verbrauch, zeitstempel);
+                var result = opt1.Optimizer.Run(pv, verbrauch, zeitstempel);
                 service.PersistMutation(
                     sessionId,
-                    opt1,
+                    opt1.Optimizer,
                     "run",
                     zeitstempel,
                     pv,
@@ -117,13 +117,13 @@ public sealed class OptimiererCsvPythonParameterTests
                     verbrauchEnergieStand[i] += verbrauch[i];
                 }
 
-                opt1.UpdateVerteilungMittelsEnergie(pvVerbrauchEnergieStand, verbrauchEnergieStand);
+                opt1.Optimizer.UpdateVerteilungMittelsEnergie(pvVerbrauchEnergieStand, verbrauchEnergieStand);
                 service.PersistMutation(
                     sessionId,
-                    opt1,
+                    opt1.Optimizer,
                     "update_verteilung_mittels_energie",
                     DateTimeOffset.UtcNow,
-                    opt1.Erzeugung);
+                    opt1.Optimizer.Erzeugung);
             }
 
             Assert.True(stateStore.TryLoad(sessionId, out var persisted));
@@ -143,7 +143,7 @@ public sealed class OptimiererCsvPythonParameterTests
             }
 
             var allRequests = historyStore.GetRequests(sessionId);
-            Assert.Equal(1 + (simDauer * 2), allRequests.Count(x =>
+            Assert.Equal(2 + (simDauer * 2), allRequests.Count(x =>
                 x.RequestType is "session_created" or "run" or "update_verteilung_mittels_energie"));
             Assert.Equal(simDauer, allRequests.Count(x => x.RequestType == "run"));
 

@@ -26,6 +26,22 @@ public sealed class EfCoreOptimizerHistoryStore : IOptimizerHistoryStore
         _logger.LogInformation("Create session history start: SessionId={SessionId}", sessionId);
         using var uow = _unitOfWorkFactory.Create();
 
+        var openSessions = uow.DbContext.Sessions
+            .Where(x => x.EndedAtUtc == null && x.SessionId != sessionId)
+            .ToList();
+        if (openSessions.Count > 0)
+        {
+            foreach (var openSession in openSessions)
+            {
+                openSession.EndedAtUtc = createdAtUtc;
+            }
+
+            _logger.LogInformation(
+                "Marked {OpenSessionCount} previously open sessions as ended before creating SessionId={SessionId}",
+                openSessions.Count,
+                sessionId);
+        }
+
         var entity = uow.Sessions.FindById(sessionId);
         if (entity is null)
         {
@@ -162,4 +178,3 @@ public sealed class EfCoreOptimizerHistoryStore : IOptimizerHistoryStore
             requestEntity.Users.Count);
     }
 }
-

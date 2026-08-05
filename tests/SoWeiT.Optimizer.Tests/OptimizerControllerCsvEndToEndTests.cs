@@ -96,6 +96,9 @@ public sealed class OptimizerControllerCsvEndToEndTests
                     sessionId);
                 var runOk = Assert.IsType<OkObjectResult>(runResult.Result);
                 var runResponse = Assert.IsType<RunResponse>(runOk.Value);
+                Assert.Equal(sessionId, runResponse.SessionId);
+                Assert.NotEqual(default, runResponse.SessionStartedAtUtc);
+                Assert.Equal(historyStore.TryGetSession(sessionId)!.CreatedAtUtc, runResponse.SessionStartedAtUtc);
 
                 Assert.Equal(userCount, runResponse.Ergebnisse.Count);
 
@@ -178,10 +181,13 @@ public sealed class OptimizerControllerCsvEndToEndTests
 
             var runOk = Assert.IsType<OkObjectResult>(runResult.Result);
             var runResponse = Assert.IsType<RunResponse>(runOk.Value);
-            Assert.Equal(3, runResponse.Ergebnisse.Count);
 
             Assert.True(controller.Response.Headers.TryGetValue("X-Optimizer-Session-Id", out var sessionHeader));
             Assert.True(Guid.TryParse(sessionHeader.ToString(), out recoveredSessionId));
+            Assert.Equal(recoveredSessionId, runResponse.SessionId);
+            Assert.NotEqual(default, runResponse.SessionStartedAtUtc);
+            Assert.Equal(historyStore.TryGetSession(recoveredSessionId)!.CreatedAtUtc, runResponse.SessionStartedAtUtc);
+            Assert.Equal(3, runResponse.Ergebnisse.Count);
             Assert.True(redisDb.KeyExists(RedisKeyPrefix + recoveredSessionId.ToString("D")));
 
             var session = historyStore.TryGetSession(recoveredSessionId);
