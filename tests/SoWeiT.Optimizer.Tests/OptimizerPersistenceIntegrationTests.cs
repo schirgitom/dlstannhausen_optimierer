@@ -66,6 +66,22 @@ public sealed class OptimizerPersistenceIntegrationTests
         Assert.Single(createdRequests);
         Assert.Equal("session_created", createdRequests[0].RequestType);
 
+        var secondSessionId = service.Create(new CreateOptimizerSessionRequest(
+            N: 3,
+            Sperrzeit1: 120,
+            Sperrzeit2: 180,
+            UseOrTools: true,
+            UseGreedyFallback: false));
+        Assert.NotEqual(createdSessionId, secondSessionId);
+
+        var firstSessionAfterSecondCreate = historyStore.TryGetSession(createdSessionId);
+        Assert.NotNull(firstSessionAfterSecondCreate);
+        Assert.NotNull(firstSessionAfterSecondCreate!.EndedAtUtc);
+
+        var secondSession = historyStore.TryGetSession(secondSessionId);
+        Assert.NotNull(secondSession);
+        Assert.Null(secondSession!.EndedAtUtc);
+
         var deleted = service.Delete(createdSessionId);
         Assert.True(deleted);
         Assert.False(redisDb.KeyExists(redisKey));

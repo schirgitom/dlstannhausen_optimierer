@@ -16,7 +16,7 @@ public sealed class OptimizerSessionService
     private const int DefaultRunRecoverySperrzeit1Seconds = 300;
     private const int DefaultRunRecoverySperrzeit2Seconds = 60;
 
-    private readonly ConcurrentDictionary<Guid, Optimierer> _cache = new();
+    private readonly ConcurrentDictionary<Guid, CachedOptimizerSession> _cache = new();
     private readonly ConcurrentDictionary<Guid, DateTimeOffset> _lastAccessUtc = new();
     private readonly ILoggerFactory _loggerFactory;
     private readonly ILogger<OptimizerSessionService> _logger;
@@ -60,14 +60,15 @@ public sealed class OptimizerSessionService
 
         var optimizer = CreateOptimizer(request.N, request.Sperrzeit1, request.Sperrzeit2, request.UseOrTools, request.UseGreedyFallback);
         var sessionId = Guid.NewGuid();
+        var createdAtUtc = DateTime.UtcNow;
 
-        if (!_cache.TryAdd(sessionId, optimizer))
+        if (!_cache.TryAdd(sessionId, new CachedOptimizerSession(optimizer, createdAtUtc)))
         {
             throw new InvalidOperationException("Could not create optimizer session.");
         }
 
         TouchLocal(sessionId);
-        Persist(sessionId, optimizer, request.UseOrTools, request.UseGreedyFallback);
+        Persist(sessionId, optimizer, request.UseOrTools, request.UseGreedyFallback, createdAtUtc);
         _historyStore.CreateSession(
             sessionId,
             new OptimizerSessionConfig(
@@ -76,7 +77,7 @@ public sealed class OptimizerSessionService
                 request.Sperrzeit2,
                 request.UseOrTools,
                 request.UseGreedyFallback),
-            DateTime.UtcNow);
+            createdAtUtc);
         _historyStore.AppendRequest(
             sessionId,
             new OptimizerRequestLog(
@@ -87,7 +88,7 @@ public sealed class OptimizerSessionService
         return sessionId;
     }
 
-    public bool TryGet(Guid sessionId, out Optimierer? optimizer)
+    public bool TryGet(Guid sessionId, out CachedOptimizerSession? session)
     {
         if (IsExpired(sessionId))
         {
@@ -97,14 +98,14 @@ public sealed class OptimizerSessionService
                 new OptimizerRequestLog(
                     "session_expired",
                     DateTimeOffset.UtcNow,
-                    _cache.TryGetValue(sessionId, out var cachedOptimizer) ? cachedOptimizer?.Erzeugung : null));
+                    _cache.TryGetValue(sessionId, out var cachedSession) ? cachedSession.Optimizer.Erzeugung : null));
             _historyStore.MarkSessionEnded(sessionId, DateTime.UtcNow);
             Invalidate(sessionId);
-            optimizer = null;
+            session = null;
             return false;
         }
 
-        if (_cache.TryGetValue(sessionId, out optimizer))
+        if (_cache.TryGetValue(sessionId, out session))
         {
             _logger.LogInformation("Session hit in memory cache: {SessionId}", sessionId);
             Touch(sessionId);
@@ -114,11 +115,11 @@ public sealed class OptimizerSessionService
         if (!_stateStore.TryLoad(sessionId, out var persisted) || persisted is null)
         {
             _logger.LogWarning("Session not found in store: {SessionId}", sessionId);
-            optimizer = null;
+            session = null;
             return false;
         }
 
-        optimizer = CreateOptimizer(
+        var optimizer = CreateOptimizer(
             persisted.Snapshot.N,
             persisted.Snapshot.Sperrzeit1,
             persisted.Snapshot.Sperrzeit2,
@@ -126,7 +127,8 @@ public sealed class OptimizerSessionService
             persisted.UseGreedyFallback);
 
         optimizer.ApplySnapshot(persisted.Snapshot);
-        _cache.TryAdd(sessionId, optimizer);
+        session = new CachedOptimizerSession(optimizer, persisted.CreatedAtUtc);
+        _cache.TryAdd(sessionId, session);
         Touch(sessionId);
         _logger.LogInformation("Session restored from Redis: {SessionId}", sessionId);
         return true;
@@ -134,7 +136,7 @@ public sealed class OptimizerSessionService
 
     public bool Delete(Guid sessionId)
     {
-        if (!TryGet(sessionId, out var optimizer) || optimizer is null)
+        if (!TryGet(sessionId, out var session) || session is null)
         {
             return false;
         }
@@ -145,7 +147,7 @@ public sealed class OptimizerSessionService
             new OptimizerRequestLog(
                 "session_deleted",
                 DateTimeOffset.UtcNow,
-                optimizer.Erzeugung));
+                session.Optimizer.Erzeugung));
         _historyStore.MarkSessionEnded(sessionId, DateTime.UtcNow);
         _logger.LogInformation("Session deleted: {SessionId}", sessionId);
         return true;
@@ -166,7 +168,7 @@ public sealed class OptimizerSessionService
             throw new InvalidOperationException($"Cannot persist unknown session {sessionId}");
         }
 
-        Persist(sessionId, optimizer, persisted.UseOrTools, persisted.UseGreedyFallback);
+        Persist(sessionId, optimizer, persisted.UseOrTools, persisted.UseGreedyFallback, persisted.CreatedAtUtc);
         _historyStore.AppendRequest(
             sessionId,
             new OptimizerRequestLog(
@@ -182,12 +184,12 @@ public sealed class OptimizerSessionService
     public bool TryPrepareData(Guid sessionId, PrepareDataRequest request, out SolverInputData? preparedData)
     {
         preparedData = null;
-        if (!TryGet(sessionId, out var optimizer) || optimizer is null)
+        if (!TryGet(sessionId, out var session) || session is null)
         {
             return false;
         }
 
-        preparedData = optimizer.PrepareData(request.Verbrauch);
+        preparedData = session.Optimizer.PrepareData(request.Verbrauch);
         return true;
     }
 
@@ -200,7 +202,7 @@ public sealed class OptimizerSessionService
         preprocessedResult = null;
         validationError = null;
 
-        if (!TryGet(sessionId, out var optimizer) || optimizer is null)
+        if (!TryGet(sessionId, out var session) || session is null)
         {
             return false;
         }
@@ -210,14 +212,14 @@ public sealed class OptimizerSessionService
             return true;
         }
 
-        preprocessedResult = optimizer.Preprocessing(request.Zeitstempel, requiredPowerWatt);
-        var preprocessingUsers = BuildPreprocessingUserLogs(optimizer, customers, requiredPowerWatt, preprocessedResult);
+        preprocessedResult = session.Optimizer.Preprocessing(request.Zeitstempel, requiredPowerWatt);
+        var preprocessingUsers = BuildPreprocessingUserLogs(session.Optimizer, customers, requiredPowerWatt, preprocessedResult);
         PersistMutation(
             sessionId,
-            optimizer,
+            session.Optimizer,
             "preprocessing",
             request.Zeitstempel,
-            optimizer.Erzeugung,
+            session.Optimizer.Erzeugung,
             CalculateConsumedPower(preprocessingUsers),
             CalculateTotalRequiredPower(preprocessingUsers),
             preprocessingUsers);
@@ -226,18 +228,18 @@ public sealed class OptimizerSessionService
 
     public bool TryPostprocessing(Guid sessionId, PostprocessingRequest request)
     {
-        if (!TryGet(sessionId, out var optimizer) || optimizer is null)
+        if (!TryGet(sessionId, out var session) || session is null)
         {
             return false;
         }
 
-        optimizer.Postprocessing(request.Zeitstempel);
+        session.Optimizer.Postprocessing(request.Zeitstempel);
         PersistMutation(
             sessionId,
-            optimizer,
+            session.Optimizer,
             "postprocessing",
             request.Zeitstempel,
-            optimizer.Erzeugung);
+            session.Optimizer.Erzeugung);
         return true;
     }
 
@@ -246,7 +248,7 @@ public sealed class OptimizerSessionService
         response = null;
         validationError = null;
 
-        if (!TryGet(sessionId, out var optimizer) || optimizer is null)
+        if (!TryGet(sessionId, out var session) || session is null)
         {
             return false;
         }
@@ -256,31 +258,31 @@ public sealed class OptimizerSessionService
             return true;
         }
 
-        if (requiredPowerWatt.Length != optimizer.N)
+        if (requiredPowerWatt.Length != session.Optimizer.N)
         {
             _logger.LogWarning(
                 "User count changed: session N={SessionN}, request N={RequestN}. Session {SessionId} will be replaced.",
-                optimizer.N,
+                session.Optimizer.N,
                 requiredPowerWatt.Length,
                 sessionId);
             Delete(sessionId);
             return false;
         }
 
-        var result = optimizer.Run(request.PvErzeugungWatt, requiredPowerWatt, request.Zeitstempel);
-        var pvVerbrauchEnergieStand = optimizer.PvVerbrauchEnergieStand?.ToArray() ?? new double[optimizer.N];
-        var verbrauchEnergieStand = optimizer.VerbrauchEnergieStand?.ToArray() ?? new double[optimizer.N];
-        for (var i = 0; i < optimizer.N; i++)
+        var result = session.Optimizer.Run(request.PvErzeugungWatt, requiredPowerWatt, request.Zeitstempel);
+        var pvVerbrauchEnergieStand = session.Optimizer.PvVerbrauchEnergieStand?.ToArray() ?? new double[session.Optimizer.N];
+        var verbrauchEnergieStand = session.Optimizer.VerbrauchEnergieStand?.ToArray() ?? new double[session.Optimizer.N];
+        for (var i = 0; i < session.Optimizer.N; i++)
         {
             pvVerbrauchEnergieStand[i] += result.ResOpt[i];
             verbrauchEnergieStand[i] += requiredPowerWatt[i];
         }
 
-        optimizer.UpdateVerteilungMittelsEnergie(pvVerbrauchEnergieStand, verbrauchEnergieStand);
-        var runUsers = BuildRunUserLogs(optimizer, customers, requiredPowerWatt, result.Schaltzustand);
+        session.Optimizer.UpdateVerteilungMittelsEnergie(pvVerbrauchEnergieStand, verbrauchEnergieStand);
+        var runUsers = BuildRunUserLogs(session.Optimizer, customers, requiredPowerWatt, result.Schaltzustand);
         PersistMutation(
             sessionId,
-            optimizer,
+            session.Optimizer,
             "run",
             request.Zeitstempel,
             request.PvErzeugungWatt,
@@ -293,7 +295,7 @@ public sealed class OptimizerSessionService
             items.Add(new RunResponseItem(customers[i], result.Schaltzustand[i], result.ResOpt[i], result.ResOpt[i]));
         }
 
-        response = new RunResponse(items);
+        response = new RunResponse(sessionId, session.CreatedAtUtc, items);
         return true;
     }
 
@@ -328,23 +330,23 @@ public sealed class OptimizerSessionService
     public bool TryGetState(Guid sessionId, out OptimizerStateResponse? state)
     {
         state = null;
-        if (!TryGet(sessionId, out var optimizer) || optimizer is null)
+        if (!TryGet(sessionId, out var session) || session is null)
         {
             return false;
         }
 
         state = new OptimizerStateResponse(
-            optimizer.N,
-            optimizer.Sperrzeit1,
-            optimizer.Sperrzeit2,
-            optimizer.Erzeugung,
-            optimizer.Faktor.ToArray(),
-            ToJagged(optimizer.Verteilung),
-            optimizer.Schaltkontingent.ToArray(),
-            optimizer.Schaltzeit.ToArray(),
-            ToJagged(optimizer.Schaltzustand),
-            optimizer.PvVerbrauchEnergieStand?.ToArray(),
-            optimizer.VerbrauchEnergieStand?.ToArray());
+            session.Optimizer.N,
+            session.Optimizer.Sperrzeit1,
+            session.Optimizer.Sperrzeit2,
+            session.Optimizer.Erzeugung,
+            session.Optimizer.Faktor.ToArray(),
+            ToJagged(session.Optimizer.Verteilung),
+            session.Optimizer.Schaltkontingent.ToArray(),
+            session.Optimizer.Schaltzeit.ToArray(),
+            ToJagged(session.Optimizer.Schaltzustand),
+            session.Optimizer.PvVerbrauchEnergieStand?.ToArray(),
+            session.Optimizer.VerbrauchEnergieStand?.ToArray());
         return true;
     }
 
@@ -352,12 +354,14 @@ public sealed class OptimizerSessionService
         Guid sessionId,
         Optimierer optimizer,
         bool useOrTools,
-        bool useGreedyFallback)
+        bool useGreedyFallback,
+        DateTime createdAtUtc)
     {
         var snapshot = optimizer.CreateSnapshot();
         var persisted = new PersistedOptimizerSession
         {
             SessionId = sessionId,
+            CreatedAtUtc = createdAtUtc,
             UseOrTools = useOrTools,
             UseGreedyFallback = useGreedyFallback,
             Snapshot = snapshot
@@ -529,5 +533,6 @@ public sealed class OptimizerSessionService
         validationError = null;
         return true;
     }
-}
 
+    public sealed record CachedOptimizerSession(Optimierer Optimizer, DateTime CreatedAtUtc);
+}

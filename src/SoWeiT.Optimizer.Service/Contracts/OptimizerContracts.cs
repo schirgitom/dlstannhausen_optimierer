@@ -28,7 +28,7 @@ public sealed record PrepareDataRequest(double[] Verbrauch);
 
 public sealed record RunResponseItem(string Kundennummer, double Schaltzustand, double ResOpt, double Messwerte);
 
-public sealed record RunResponse(List<RunResponseItem> Ergebnisse);
+public sealed record RunResponse(Guid SessionId, DateTime SessionStartedAtUtc, List<RunResponseItem> Ergebnisse);
 
 public sealed record OptimizerStateResponse(
     int N,
@@ -42,4 +42,3 @@ public sealed record OptimizerStateResponse(
     double[][] Schaltzustand,
     double[]? PvVerbrauchEnergieStand,
     double[]? VerbrauchEnergieStand);
-

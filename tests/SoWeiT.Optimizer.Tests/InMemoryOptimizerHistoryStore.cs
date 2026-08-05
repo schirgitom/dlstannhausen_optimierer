@@ -12,6 +12,11 @@ public sealed class InMemoryOptimizerHistoryStore : IOptimizerHistoryStore
     {
         lock (_lock)
         {
+            foreach (var key in _sessions.Keys.Where(x => x != sessionId && _sessions[x].EndedAtUtc is null).ToArray())
+            {
+                _sessions[key] = _sessions[key] with { EndedAtUtc = createdAtUtc };
+            }
+
             _sessions[sessionId] = new SessionSnapshot(sessionConfig, createdAtUtc, null);
             if (!_requests.ContainsKey(sessionId))
             {
