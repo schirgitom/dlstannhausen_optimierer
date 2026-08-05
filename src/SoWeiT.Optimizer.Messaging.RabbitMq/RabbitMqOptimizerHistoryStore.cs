@@ -1,20 +1,27 @@
 using System.Text;
 using System.Text.Json;
+using System.Linq;
+using System.IO;
+using System.Net.Sockets;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Exceptions;
 using SoWeiT.Optimizer.Persistence.History.Persistence;
 
 namespace SoWeiT.Optimizer.Messaging.RabbitMq;
 
 public sealed class RabbitMqOptimizerHistoryStore : IOptimizerHistoryStore, IDisposable
 {
+    private static readonly TimeSpan ConnectionRetryDelay = TimeSpan.FromSeconds(30);
+
     private readonly ILogger<RabbitMqOptimizerHistoryStore> _logger;
     private readonly RabbitMqHistoryOptions _options;
     private readonly string _queueName;
     private readonly ConnectionFactory _factory;
     private readonly object _connectionSync = new();
     private IConnection? _connection;
+    private DateTimeOffset? _nextConnectionAttemptUtc;
     private readonly JsonSerializerOptions _serializerOptions = new(JsonSerializerDefaults.Web);
 
     public RabbitMqOptimizerHistoryStore(
@@ -68,7 +75,7 @@ public sealed class RabbitMqOptimizerHistoryStore : IOptimizerHistoryStore, IDis
         {
             if (!EnsureConnection())
             {
-                _logger.LogError(
+                _logger.LogWarning(
                     "RabbitMQ is not reachable. History event {EventType} for session {SessionId} will be skipped.",
                     payload.EventType,
                     payload.SessionId);
@@ -103,6 +110,17 @@ public sealed class RabbitMqOptimizerHistoryStore : IOptimizerHistoryStore, IDis
             return true;
         }
 
+        var now = DateTimeOffset.UtcNow;
+        var nextAttemptUtc = _nextConnectionAttemptUtc;
+        if (nextAttemptUtc is { } retryAtUtc && retryAtUtc > now)
+        {
+            _logger.LogDebug(
+                "Skipping RabbitMQ reconnect attempt for history queue {QueueName} until {RetryAtUtc}.",
+                _queueName,
+                retryAtUtc);
+            return false;
+        }
+
         lock (_connectionSync)
         {
             if (_connection is { IsOpen: true })
@@ -110,17 +128,36 @@ public sealed class RabbitMqOptimizerHistoryStore : IOptimizerHistoryStore, IDis
                 return true;
             }
 
+            nextAttemptUtc = _nextConnectionAttemptUtc;
+            if (nextAttemptUtc is { } lockedRetryAtUtc && lockedRetryAtUtc > DateTimeOffset.UtcNow)
+            {
+                return false;
+            }
+
             try
             {
                 _connection = _factory.CreateConnection("optimizer-api-history-publisher");
                 using var channel = _connection.CreateModel();
                 channel.QueueDeclare(queue: _queueName, durable: true, exclusive: false, autoDelete: false, arguments: null);
+                _nextConnectionAttemptUtc = null;
                 _logger.LogInformation(
                     "Connected to RabbitMQ history queue {QueueName} at {Host}:{Port}",
                     _queueName,
                     _options.HostName,
                     _options.Port);
                 return true;
+            }
+            catch (Exception ex) when (IsExpectedConnectionFailure(ex))
+            {
+                _nextConnectionAttemptUtc = DateTimeOffset.UtcNow.Add(ConnectionRetryDelay);
+                _logger.LogWarning(
+                    "Could not connect to RabbitMQ history queue {QueueName} at {Host}:{Port}. History events will be skipped until {RetryAtUtc}.",
+                    _queueName,
+                    _options.HostName,
+                    _options.Port,
+                    _nextConnectionAttemptUtc);
+                ResetConnection();
+                return false;
             }
             catch (Exception ex)
             {
@@ -134,6 +171,21 @@ public sealed class RabbitMqOptimizerHistoryStore : IOptimizerHistoryStore, IDis
                 return false;
             }
         }
+    }
+
+    private static bool IsExpectedConnectionFailure(Exception exception)
+    {
+        if (exception is BrokerUnreachableException or ConnectFailureException or SocketException or TimeoutException or IOException)
+        {
+            return true;
+        }
+
+        if (exception is AggregateException aggregateException)
+        {
+            return aggregateException.InnerExceptions.Any(IsExpectedConnectionFailure);
+        }
+
+        return exception.InnerException is not null && IsExpectedConnectionFailure(exception.InnerException);
     }
 
     private void ResetConnection()
