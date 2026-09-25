@@ -10,12 +10,14 @@ public sealed class RedisOptimizerStateStore : IOptimizerStateStore
 {
     private const string KeyPrefix = "optimizer:sessions:";
 
+    private readonly IConnectionMultiplexer _multiplexer;
     private readonly IDatabase _database;
     private readonly ILogger<RedisOptimizerStateStore> _logger;
     private readonly TimeSpan _ttl;
 
     public RedisOptimizerStateStore(IConnectionMultiplexer multiplexer, ILogger<RedisOptimizerStateStore> logger, IConfiguration configuration)
     {
+        _multiplexer = multiplexer;
         _database = multiplexer.GetDatabase();
         _logger = logger;
 
@@ -60,6 +62,40 @@ public sealed class RedisOptimizerStateStore : IOptimizerStateStore
         _logger.LogInformation("Redis delete start: SessionId={SessionId}", sessionId);
         _database.KeyDelete(GetKey(sessionId));
         _logger.LogInformation("Redis delete done: SessionId={SessionId}", sessionId);
+    }
+
+    public IReadOnlyCollection<Guid> DeleteAll()
+    {
+        _logger.LogInformation("Redis delete-all start: Prefix={Prefix}", KeyPrefix);
+        var deleted = new List<Guid>();
+        var pattern = KeyPrefix + "*";
+
+        foreach (var endpoint in _multiplexer.GetEndPoints())
+        {
+            var server = _multiplexer.GetServer(endpoint);
+            if (!server.IsConnected || server.IsReplica)
+            {
+                continue;
+            }
+
+            foreach (var key in server.Keys(_database.Database, pattern))
+            {
+                if (!_database.KeyDelete(key))
+                {
+                    continue;
+                }
+
+                var keyString = key.ToString();
+                var idPart = keyString.Substring(KeyPrefix.Length);
+                if (Guid.TryParse(idPart, out var sessionId))
+                {
+                    deleted.Add(sessionId);
+                }
+            }
+        }
+
+        _logger.LogInformation("Redis delete-all done: Count={Count}", deleted.Count);
+        return deleted;
     }
 
     private static string GetKey(Guid sessionId) => KeyPrefix + sessionId.ToString("D");

@@ -49,11 +49,77 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddSingleton<OptimizerSessionService>();
-builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
+builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
 {
+    var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("Redis");
+
     var redisConnectionString = builder.Configuration.GetConnectionString("Redis")
                                 ?? throw new InvalidOperationException("ConnectionStrings:Redis is missing.");
-    return ConnectionMultiplexer.Connect(redisConnectionString);
+
+    ConfigurationOptions options;
+    try
+    {
+        options = ConfigurationOptions.Parse(redisConnectionString);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex, "Redis connection string konnte nicht geparst werden: {ConnectionString}",
+            MaskRedisConnectionString(redisConnectionString));
+        throw;
+    }
+
+    options.AbortOnConnectFail = false;
+
+    var endpoints = string.Join(", ", options.EndPoints.Select(e => e.ToString()));
+    logger.LogInformation(
+        "Redis Verbindung wird aufgebaut. Endpoints=[{Endpoints}] Ssl={Ssl} AbortOnConnectFail={AbortOnConnectFail} " +
+        "ConnectTimeout={ConnectTimeout}ms SyncTimeout={SyncTimeout}ms DefaultDatabase={DefaultDatabase} " +
+        "User={User} PasswordSet={PasswordSet} ClientName={ClientName} RawConfig={RawConfig}",
+        endpoints,
+        options.Ssl,
+        options.AbortOnConnectFail,
+        options.ConnectTimeout,
+        options.SyncTimeout,
+        options.DefaultDatabase,
+        options.User ?? "(none)",
+        !string.IsNullOrEmpty(options.Password),
+        options.ClientName ?? "(none)",
+        MaskRedisConnectionString(redisConnectionString));
+
+    var logWriter = new StringWriter();
+    ConnectionMultiplexer multiplexer;
+    try
+    {
+        multiplexer = ConnectionMultiplexer.Connect(options, logWriter);
+    }
+    catch (Exception ex)
+    {
+        logger.LogError(ex,
+            "Redis Verbindung fehlgeschlagen. Endpoints=[{Endpoints}] StackExchangeLog={Log}",
+            endpoints, logWriter.ToString());
+        throw;
+    }
+
+    logger.LogInformation(
+        "Redis Verbindung hergestellt. IsConnected={IsConnected} ConnectedEndpoints=[{Connected}] StackExchangeLog={Log}",
+        multiplexer.IsConnected,
+        string.Join(", ", multiplexer.GetEndPoints().Select(e => $"{e}({(multiplexer.GetServer(e).IsConnected ? "up" : "down")})")),
+        logWriter.ToString());
+
+    multiplexer.ConnectionFailed += (_, e) => logger.LogError(e.Exception,
+        "Redis ConnectionFailed: EndPoint={EndPoint} ConnectionType={ConnectionType} FailureType={FailureType}",
+        e.EndPoint, e.ConnectionType, e.FailureType);
+    multiplexer.ConnectionRestored += (_, e) => logger.LogInformation(
+        "Redis ConnectionRestored: EndPoint={EndPoint} ConnectionType={ConnectionType}",
+        e.EndPoint, e.ConnectionType);
+    multiplexer.InternalError += (_, e) => logger.LogError(e.Exception,
+        "Redis InternalError: EndPoint={EndPoint} Origin={Origin}", e.EndPoint, e.Origin);
+    multiplexer.ErrorMessage += (_, e) => logger.LogWarning(
+        "Redis ErrorMessage: EndPoint={EndPoint} Message={Message}", e.EndPoint, e.Message);
+    multiplexer.ConfigurationChanged += (_, e) => logger.LogInformation(
+        "Redis ConfigurationChanged: EndPoint={EndPoint}", e.EndPoint);
+
+    return multiplexer;
 });
 builder.Services.AddSingleton<IOptimizerStateStore, RedisOptimizerStateStore>();
 builder.Services.AddSingleton<IOptimizerHistoryStore, RabbitMqOptimizerHistoryStore>();
@@ -71,6 +137,33 @@ app.UseHttpsRedirection();
 app.MapControllers();
 
 app.Run();
+
+static string MaskRedisConnectionString(string connectionString)
+{
+    if (string.IsNullOrWhiteSpace(connectionString))
+    {
+        return connectionString;
+    }
+
+    var parts = connectionString.Split(',');
+    for (var i = 0; i < parts.Length; i++)
+    {
+        var part = parts[i];
+        var eq = part.IndexOf('=');
+        if (eq <= 0)
+        {
+            continue;
+        }
+
+        var key = part.Substring(0, eq).Trim();
+        if (key.Equals("password", StringComparison.OrdinalIgnoreCase))
+        {
+            parts[i] = key + "=***";
+        }
+    }
+
+    return string.Join(",", parts);
+}
 
 static Serilog.ILogger CreateConsoleLogger()
 {

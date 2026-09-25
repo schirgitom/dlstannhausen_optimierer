@@ -9,7 +9,7 @@
         "CONSUL_URL": "http://localhost:8500",
         "ConnectionStrings__Redis": "localhost:6379",
         "ConnectionStrings__Postgres": "Host=localhost;Port=5433;Database=soweit_optimizer;Username=dlstannhausen;Password=dlstannhausen",
-        "RabbitMq__HostName" : "localhost",
+        "RabbitMq__HostName" : "89.167.95.230",
         "RabbitMq__Port": 5672,
         "RabbitMq__UserName": "admin",
         "RabbitMq__Password": "admin",

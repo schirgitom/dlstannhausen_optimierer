@@ -1,0 +1,67 @@
+Das ist mein Docker Compose:
+
+
+version: "3.3"
+
+services:
+
+  dls-tannhausen-redis:
+    image: redis:latest
+    command: ["redis-server", "--appendonly", "yes", "--ignore-warnings", "ARM64-COW-BUG"]
+    container_name: dls-tannhausen-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis_data:/data
+    networks:
+      - backend
+
+  dls-tannhausen-rabbitmq:
+    image: rabbitmq:management
+    container_name: dls-tannhausen-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: "admin"
+      RABBITMQ_DEFAULT_PASS: "admin"
+    networks:
+      - backend
+
+  dls-tannhausen-optimizer-api:
+    image: thomasschirgi/soweitoptimizerapi:2026-09-24-03
+    container_name: dls-tannhausen-optimizer-api
+    restart: unless-stopped
+    depends_on:
+      - dls-tannhausen-redis
+      - dls-tannhausen-rabbitmq
+    ports:
+      - "8080:8080"
+    environment:
+      ASPNETCORE_URLS: "http://+:8080"
+      ConnectionStrings__Redis: "192.168.10.1:6379"
+      RabbitMq__HostName: 89.167.95.230
+      RabbitMq__Port: "5672"
+      RabbitMq__UserName: admin
+      RabbitMq__Password: Tannhausen2026!
+      RabbitMq__VirtualHost: "/"
+      RabbitMq__QueueName: optimizer.history
+      OptimizerStateStore__SessionTtlMinutes: "60"
+      OptimizerSessionRecovery__Sperrzeit1: "30"
+      OptimizerSessionRecovery__Sperrzeit2: "60"
+      OptimizerSessionRecovery__UseOrTools: "true"
+      OptimizerSessionRecovery__UseGreedyFallback: "true"
+      AllowedHosts: "*"
+      Seq__ServerUrl: http://89.167.95.230:5341
+    networks:
+      - backend
+
+networks:
+  backend:
+    driver: bridge
+/opt #
+
+
+Aktuell kann sich der optimizer aber scheinbar nicht verbinden. Wieso?

@@ -15,4 +15,8 @@ public sealed class RabbitMqHistoryOptions
     public string QueueName { get; set; } = "optimizer.history";
 
     public int MaxRetryCount { get; set; } = 5;
+
+    public int ConnectTimeoutMilliseconds { get; set; } = 1000;
+
+    public int PublishQueueCapacity { get; set; } = 1024;
 }

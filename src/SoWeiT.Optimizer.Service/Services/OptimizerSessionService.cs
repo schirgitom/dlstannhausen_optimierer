@@ -153,6 +153,43 @@ public sealed class OptimizerSessionService
         return true;
     }
 
+    public int DeleteAll()
+    {
+        _logger.LogInformation("Delete all sessions requested");
+
+        var sessionIds = new HashSet<Guid>(_cache.Keys);
+        foreach (var id in _stateStore.DeleteAll())
+        {
+            sessionIds.Add(id);
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var nowUtc = DateTime.UtcNow;
+        foreach (var sessionId in sessionIds)
+        {
+            _cache.TryRemove(sessionId, out var cached);
+            _lastAccessUtc.TryRemove(sessionId, out _);
+
+            try
+            {
+                _historyStore.AppendRequest(
+                    sessionId,
+                    new OptimizerRequestLog(
+                        "session_deleted",
+                        now,
+                        cached?.Optimizer.Erzeugung));
+                _historyStore.MarkSessionEnded(sessionId, nowUtc);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to record history for deleted session {SessionId}", sessionId);
+            }
+        }
+
+        _logger.LogInformation("Deleted {Count} session(s) in total", sessionIds.Count);
+        return sessionIds.Count;
+    }
+
     public void PersistMutation(
         Guid sessionId,
         Optimierer optimizer,

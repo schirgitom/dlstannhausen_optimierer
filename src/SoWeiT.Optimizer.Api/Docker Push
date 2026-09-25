@@ -1,0 +1,9 @@
+cd D:\Entwicklung\DLSTannhausen\dlstannhausen_optimierer
+
+docker buildx build `
+  --platform linux/arm64 `
+  --build-arg TARGET_RUNTIME=linux-musl-arm64 `
+  -f src/SoWeiT.Optimizer.Api/Dockerfile `
+  -t thomasschirgi/soweitoptimizerapi:arm64 `
+  -t thomasschirgi/soweitoptimizerapi:2026-09-25-01 `
+  --push .

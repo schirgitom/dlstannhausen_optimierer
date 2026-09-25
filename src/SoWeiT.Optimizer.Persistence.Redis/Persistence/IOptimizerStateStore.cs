@@ -11,5 +11,7 @@ public interface IOptimizerStateStore
     void Touch(Guid sessionId);
 
     void Delete(Guid sessionId);
+
+    IReadOnlyCollection<Guid> DeleteAll();
 }
 

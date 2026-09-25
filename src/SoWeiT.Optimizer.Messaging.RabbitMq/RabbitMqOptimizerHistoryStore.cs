@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Linq;
 using System.IO;
 using System.Net.Sockets;
+using System.Threading.Channels;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
@@ -14,6 +15,7 @@ namespace SoWeiT.Optimizer.Messaging.RabbitMq;
 public sealed class RabbitMqOptimizerHistoryStore : IOptimizerHistoryStore, IDisposable
 {
     private static readonly TimeSpan ConnectionRetryDelay = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ShutdownWaitTimeout = TimeSpan.FromSeconds(2);
 
     private readonly ILogger<RabbitMqOptimizerHistoryStore> _logger;
     private readonly RabbitMqHistoryOptions _options;
@@ -23,6 +25,9 @@ public sealed class RabbitMqOptimizerHistoryStore : IOptimizerHistoryStore, IDis
     private IConnection? _connection;
     private DateTimeOffset? _nextConnectionAttemptUtc;
     private readonly JsonSerializerOptions _serializerOptions = new(JsonSerializerDefaults.Web);
+    private readonly Channel<OptimizerHistoryEvent> _publishQueue;
+    private readonly CancellationTokenSource _publisherCts = new();
+    private readonly Task _publisherTask;
 
     public RabbitMqOptimizerHistoryStore(
         IConfiguration configuration,
@@ -39,14 +44,23 @@ public sealed class RabbitMqOptimizerHistoryStore : IOptimizerHistoryStore, IDis
             UserName = _options.UserName,
             Password = _options.Password,
             VirtualHost = _options.VirtualHost,
+            RequestedConnectionTimeout = TimeSpan.FromMilliseconds(Math.Max(100, _options.ConnectTimeoutMilliseconds)),
             AutomaticRecoveryEnabled = true,
             TopologyRecoveryEnabled = true
         };
+
+        _publishQueue = Channel.CreateBounded<OptimizerHistoryEvent>(new BoundedChannelOptions(Math.Max(1, _options.PublishQueueCapacity))
+        {
+            SingleReader = true,
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.DropWrite
+        });
+        _publisherTask = Task.Run(ProcessQueueAsync);
     }
 
     public void CreateSession(Guid sessionId, OptimizerSessionConfig sessionConfig, DateTime createdAtUtc)
     {
-        Publish(new OptimizerHistoryEvent(
+        Enqueue(new OptimizerHistoryEvent(
             OptimizerHistoryEventType.SessionCreated,
             sessionId,
             SessionConfig: sessionConfig,
@@ -55,7 +69,7 @@ public sealed class RabbitMqOptimizerHistoryStore : IOptimizerHistoryStore, IDis
 
     public void MarkSessionEnded(Guid sessionId, DateTime endedAtUtc)
     {
-        Publish(new OptimizerHistoryEvent(
+        Enqueue(new OptimizerHistoryEvent(
             OptimizerHistoryEventType.SessionEnded,
             sessionId,
             EndedAtUtc: endedAtUtc));
@@ -63,10 +77,48 @@ public sealed class RabbitMqOptimizerHistoryStore : IOptimizerHistoryStore, IDis
 
     public void AppendRequest(Guid sessionId, OptimizerRequestLog request)
     {
-        Publish(new OptimizerHistoryEvent(
+        Enqueue(new OptimizerHistoryEvent(
             OptimizerHistoryEventType.RequestAppended,
             sessionId,
             Request: request));
+    }
+
+    private void Enqueue(OptimizerHistoryEvent payload)
+    {
+        if (!_publishQueue.Writer.TryWrite(payload))
+        {
+            _logger.LogWarning(
+                "RabbitMQ history queue is full. Dropping event {EventType} for session {SessionId}.",
+                payload.EventType,
+                payload.SessionId);
+        }
+    }
+
+    private async Task ProcessQueueAsync()
+    {
+        while (!_publisherCts.IsCancellationRequested)
+        {
+            try
+            {
+                if (!await _publishQueue.Reader.WaitToReadAsync(_publisherCts.Token).ConfigureAwait(false))
+                {
+                    break;
+                }
+
+                while (_publishQueue.Reader.TryRead(out var payload))
+                {
+                    Publish(payload);
+                }
+            }
+            catch (OperationCanceledException) when (_publisherCts.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unexpected failure in RabbitMQ history background publisher loop.");
+            }
+        }
     }
 
     private void Publish(OptimizerHistoryEvent payload)
@@ -209,6 +261,22 @@ public sealed class RabbitMqOptimizerHistoryStore : IOptimizerHistoryStore, IDis
 
     public void Dispose()
     {
+        _publishQueue.Writer.TryComplete();
+        _publisherCts.Cancel();
+
+        try
+        {
+            _publisherTask.Wait(ShutdownWaitTimeout);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "RabbitMQ history background publisher did not stop gracefully.");
+        }
+        finally
+        {
+            _publisherCts.Dispose();
+        }
+
         ResetConnection();
     }
 }

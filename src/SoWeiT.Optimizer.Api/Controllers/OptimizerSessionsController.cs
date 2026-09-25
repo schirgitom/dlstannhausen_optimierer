@@ -28,6 +28,15 @@ public sealed class OptimizerSessionsController : ControllerBase
         return Ok(new CreateOptimizerSessionResponse(sessionId));
     }
 
+    [HttpDelete]
+    public IActionResult DeleteAll()
+    {
+        _logger.LogInformation("HTTP DeleteAll called");
+        var count = _sessionService.DeleteAll();
+        Response.Cookies.Delete(SessionCookieName);
+        return Ok(new { Deleted = count });
+    }
+
     [HttpDelete("{sessionId:guid}")]
     public IActionResult Delete(Guid sessionId)
     {
