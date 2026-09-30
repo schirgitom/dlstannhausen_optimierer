@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using Prometheus;
 using SoWeiT.Optimizer;
 using SoWeiT.Optimizer.Models;
 using SoWeiT.Optimizer.Persistence.History.Persistence;
@@ -22,23 +23,27 @@ public sealed class OptimizerSessionService
     private readonly ILogger<OptimizerSessionService> _logger;
     private readonly IOptimizerStateStore _stateStore;
     private readonly IOptimizerHistoryStore _historyStore;
+    private readonly OptimizerMetrics _metrics;
     private readonly TimeSpan _inactivityTimeout;
     private readonly int _runRecoverySperrzeit1Seconds;
     private readonly int _runRecoverySperrzeit2Seconds;
     private readonly bool _runRecoveryUseOrTools;
     private readonly bool _runRecoveryUseGreedyFallback;
+    private readonly bool _dryMode;
 
     public OptimizerSessionService(
         ILoggerFactory loggerFactory,
         ILogger<OptimizerSessionService> logger,
         IOptimizerStateStore stateStore,
         IOptimizerHistoryStore historyStore,
+        OptimizerMetrics metrics,
         IConfiguration configuration)
     {
         _loggerFactory = loggerFactory;
         _logger = logger;
         _stateStore = stateStore;
         _historyStore = historyStore;
+        _metrics = metrics;
 
         var timeoutMinutes = configuration.GetValue<int?>("OptimizerStateStore:SessionTtlMinutes") ?? 720;
         _inactivityTimeout = TimeSpan.FromMinutes(timeoutMinutes);
@@ -46,6 +51,11 @@ public sealed class OptimizerSessionService
         _runRecoverySperrzeit2Seconds = configuration.GetValue<int?>("OptimizerSessionRecovery:Sperrzeit2") ?? DefaultRunRecoverySperrzeit2Seconds;
         _runRecoveryUseOrTools = configuration.GetValue<bool?>("OptimizerSessionRecovery:UseOrTools") ?? true;
         _runRecoveryUseGreedyFallback = configuration.GetValue<bool?>("OptimizerSessionRecovery:UseGreedyFallback") ?? false;
+        _dryMode = configuration.GetValue<bool?>("DryMode") ?? false;
+        if (_dryMode)
+        {
+            _logger.LogWarning("DryMode is ENABLED — switching recommendations will be suppressed.");
+        }
     }
 
     public Guid Create(CreateOptimizerSessionRequest request)
@@ -84,6 +94,8 @@ public sealed class OptimizerSessionService
                 "session_created",
                 DateTimeOffset.UtcNow,
                 optimizer.Erzeugung));
+        _metrics.SessionsCreatedTotal.Inc();
+        _metrics.ActiveSessionsCount.Set(_cache.Count);
         _logger.LogInformation("Session created: {SessionId}", sessionId);
         return sessionId;
     }
@@ -101,6 +113,8 @@ public sealed class OptimizerSessionService
                     _cache.TryGetValue(sessionId, out var cachedSession) ? cachedSession.Optimizer.Erzeugung : null));
             _historyStore.MarkSessionEnded(sessionId, DateTime.UtcNow);
             Invalidate(sessionId);
+            _metrics.SessionsExpiredTotal.Inc();
+            _metrics.ActiveSessionsCount.Set(_cache.Count);
             session = null;
             return false;
         }
@@ -149,6 +163,8 @@ public sealed class OptimizerSessionService
                 DateTimeOffset.UtcNow,
                 session.Optimizer.Erzeugung));
         _historyStore.MarkSessionEnded(sessionId, DateTime.UtcNow);
+        _metrics.SessionsDeletedTotal.Inc();
+        _metrics.ActiveSessionsCount.Set(_cache.Count);
         _logger.LogInformation("Session deleted: {SessionId}", sessionId);
         return true;
     }
@@ -186,6 +202,8 @@ public sealed class OptimizerSessionService
             }
         }
 
+        _metrics.SessionsDeletedTotal.Inc(sessionIds.Count);
+        _metrics.ActiveSessionsCount.Set(_cache.Count);
         _logger.LogInformation("Deleted {Count} session(s) in total", sessionIds.Count);
         return sessionIds.Count;
     }
@@ -260,6 +278,12 @@ public sealed class OptimizerSessionService
             CalculateConsumedPower(preprocessingUsers),
             CalculateTotalRequiredPower(preprocessingUsers),
             preprocessingUsers);
+        _metrics.PreprocessingRequestsTotal.Inc();
+        for (var i = 0; i < customers.Length; i++)
+        {
+            _metrics.RecordCustomerData(customers[i], requiredPowerWatt[i], request.Zeitstempel);
+        }
+
         return true;
     }
 
@@ -277,6 +301,7 @@ public sealed class OptimizerSessionService
             "postprocessing",
             request.Zeitstempel,
             session.Optimizer.Erzeugung);
+        _metrics.PostprocessingRequestsTotal.Inc();
         return true;
     }
 
@@ -306,7 +331,12 @@ public sealed class OptimizerSessionService
             return false;
         }
 
-        var result = session.Optimizer.Run(request.PvErzeugungWatt, requiredPowerWatt, request.Zeitstempel);
+        OptimizationResult result;
+        using (_metrics.RunDurationSeconds.NewTimer())
+        {
+            result = session.Optimizer.Run(request.PvErzeugungWatt, requiredPowerWatt, request.Zeitstempel);
+        }
+
         var pvVerbrauchEnergieStand = session.Optimizer.PvVerbrauchEnergieStand?.ToArray() ?? new double[session.Optimizer.N];
         var verbrauchEnergieStand = session.Optimizer.VerbrauchEnergieStand?.ToArray() ?? new double[session.Optimizer.N];
         for (var i = 0; i < session.Optimizer.N; i++)
@@ -326,10 +356,21 @@ public sealed class OptimizerSessionService
             CalculateConsumedPower(runUsers),
             CalculateTotalRequiredPower(runUsers),
             runUsers);
+        _metrics.RunRequestsTotal.Inc();
+        _metrics.PvPowerWatt.WithLabels(sessionId.ToString("D")).Set(request.PvErzeugungWatt);
+        for (var i = 0; i < customers.Length; i++)
+        {
+            _metrics.RecordCustomerData(customers[i], requiredPowerWatt[i], request.Zeitstempel);
+        }
         var items = new List<RunResponseItem>(customers.Length);
         for (var i = 0; i < customers.Length; i++)
         {
             items.Add(new RunResponseItem(customers[i], result.Schaltzustand[i], result.ResOpt[i], result.ResOpt[i]));
+        }
+
+        if (_dryMode)
+        {
+            _logger.LogInformation("DryMode active for session {SessionId} — client should not act on switching recommendations", sessionId);
         }
 
         response = new RunResponse(sessionId, session.CreatedAtUtc, items);
@@ -352,6 +393,7 @@ public sealed class OptimizerSessionService
             UseGreedyFallback: _runRecoveryUseGreedyFallback);
 
         sessionId = Create(createRequest);
+        _metrics.RunRecoveriesTotal.Inc();
         _logger.LogInformation(
             "Created recovery session for run: SessionId={SessionId}, N={N}, Sperrzeit1={Sperrzeit1}, Sperrzeit2={Sperrzeit2}, UseOrTools={UseOrTools}, UseGreedyFallback={UseGreedyFallback}",
             sessionId,

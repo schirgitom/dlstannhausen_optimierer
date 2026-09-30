@@ -1,4 +1,5 @@
 using SoWeiT.Optimizer.Api.Configuration;
+using Prometheus;
 using Serilog;
 using SoWeiT.Optimizer.Messaging.RabbitMq;
 using SoWeiT.Optimizer.Persistence.History.Persistence;
@@ -48,7 +49,9 @@ ValidateRequiredConfiguration(
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddSingleton<OptimizerMetrics>();
 builder.Services.AddSingleton<OptimizerSessionService>();
+builder.Services.AddHostedService<MetricsRefreshService>();
 builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
 {
     var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("Redis");
@@ -135,6 +138,7 @@ app.UseSerilogRequestLogging();
 
 app.UseHttpsRedirection();
 app.MapControllers();
+app.MapMetrics();
 
 app.Run();
 
