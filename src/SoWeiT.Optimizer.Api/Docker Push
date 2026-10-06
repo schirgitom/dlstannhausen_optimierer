@@ -5,5 +5,5 @@ docker buildx build `
   --build-arg TARGET_RUNTIME=linux-musl-arm64 `
   -f src/SoWeiT.Optimizer.Api/Dockerfile `
   -t thomasschirgi/soweitoptimizerapi:arm64 `
-  -t thomasschirgi/soweitoptimizerapi:2026-09-25-02 `
+  -t thomasschirgi/soweitoptimizerapi:2026-10-06-01 `
   --push .

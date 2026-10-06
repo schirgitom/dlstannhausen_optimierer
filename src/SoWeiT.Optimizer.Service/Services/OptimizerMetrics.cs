@@ -8,6 +8,8 @@ namespace SoWeiT.Optimizer.Service.Services;
 /// </summary>
 public sealed class OptimizerMetrics
 {
+    private static readonly TimeSpan CustomerOfflineAfter = TimeSpan.FromMinutes(5);
+
     // Session lifecycle counters
     public readonly Counter SessionsCreatedTotal = Metrics.CreateCounter(
         "optimizer_sessions_created_total",
@@ -55,6 +57,22 @@ public sealed class OptimizerMetrics
         "Unix timestamp (UTC) of the last data received from the customer.",
         labelNames: ["customer"]);
 
+    // Per-customer availability state
+    public readonly Gauge CustomerOnline = Metrics.CreateGauge(
+        "optimizer_customer_online",
+        "Whether the customer station is online (1) or offline (0); offline after 5 minutes without data.",
+        labelNames: ["customer"]);
+
+    public readonly Gauge CustomerOnlineSinceTimestampSeconds = Metrics.CreateGauge(
+        "optimizer_customer_online_since_timestamp_seconds",
+        "Unix timestamp (UTC) when the customer station most recently became online.",
+        labelNames: ["customer"]);
+
+    public readonly Gauge CustomerLastOfflineTimestampSeconds = Metrics.CreateGauge(
+        "optimizer_customer_last_offline_timestamp_seconds",
+        "Unix timestamp (UTC) when the customer station most recently went offline.",
+        labelNames: ["customer"]);
+
     // PV power gauge (last known value per session)
     public readonly Gauge PvPowerWatt = Metrics.CreateGauge(
         "optimizer_pv_power_watt",
@@ -78,6 +96,7 @@ public sealed class OptimizerMetrics
 
     // Tracks last-seen timestamps per customer (used to compute age)
     private readonly Dictionary<string, DateTimeOffset> _customerLastSeen = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, bool> _customerOnline = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _lock = new();
 
     /// <summary>
@@ -88,8 +107,15 @@ public sealed class OptimizerMetrics
         lock (_lock)
         {
             _customerLastSeen[customer] = requestTimestamp;
-        }
 
+            if (!_customerOnline.TryGetValue(customer, out var wasOnline) || !wasOnline)
+            {
+                CustomerOnlineSinceTimestampSeconds.WithLabels(customer).Set(requestTimestamp.ToUnixTimeSeconds());
+            }
+
+            _customerOnline[customer] = true;
+            CustomerOnline.WithLabels(customer).Set(1);
+        }
 
         var unixTs = requestTimestamp.ToUnixTimeSeconds();
         CustomerLastDataTimestampSeconds.WithLabels(customer).Set(unixTs);
@@ -105,16 +131,21 @@ public sealed class OptimizerMetrics
     public void RefreshCustomerAges()
     {
         var now = DateTimeOffset.UtcNow;
-        Dictionary<string, DateTimeOffset> snapshot;
         lock (_lock)
         {
-            snapshot = new Dictionary<string, DateTimeOffset>(_customerLastSeen, StringComparer.OrdinalIgnoreCase);
-        }
+            foreach (var (customer, lastSeen) in _customerLastSeen)
+            {
+                var age = now - lastSeen;
+                CustomerLastDataAgeSeconds.WithLabels(customer).Set(age.TotalSeconds);
 
-        foreach (var (customer, lastSeen) in snapshot)
-        {
-            var ageSeconds = (now - lastSeen).TotalSeconds;
-            CustomerLastDataAgeSeconds.WithLabels(customer).Set(ageSeconds);
+                if (age >= CustomerOfflineAfter && _customerOnline[customer])
+                {
+                    _customerOnline[customer] = false;
+                    CustomerOnline.WithLabels(customer).Set(0);
+                    CustomerLastOfflineTimestampSeconds.WithLabels(customer)
+                        .Set((lastSeen + CustomerOfflineAfter).ToUnixTimeSeconds());
+                }
+            }
         }
     }
 }

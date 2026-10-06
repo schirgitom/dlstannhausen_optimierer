@@ -319,7 +319,7 @@ public sealed class Optimierer
         ReadOnlySpan<double> pvVerbrauchEnergieStand,
         ReadOnlySpan<double> verbrauchEnergieStand)
     {
-        _logger.LogInformation(
+        _logger.LogDebug(
             "UpdateVerteilungMittelsEnergie start. PvVerbrauchEnergieStand={Pv}, VerbrauchEnergieStand={Verbrauch}",
             FormatSpan(pvVerbrauchEnergieStand),
             FormatSpan(verbrauchEnergieStand));
@@ -347,7 +347,7 @@ public sealed class Optimierer
 
         _pvVerbrauchEnergieStand = pvVerbrauchEnergieStand.ToArray();
         _verbrauchEnergieStand = verbrauchEnergieStand.ToArray();
-        _logger.LogInformation("UpdateVerteilungMittelsEnergie done.");
+        _logger.LogDebug("UpdateVerteilungMittelsEnergie done.");
     }
 
     /// <summary>
@@ -374,12 +374,12 @@ public sealed class Optimierer
         }
 
         UpdateFaktor();
-        _logger.LogInformation("UpdateVerteilung done.");
+        _logger.LogDebug("UpdateVerteilung done.");
     }
 
     private void UpdateFaktor()
     {
-        _logger.LogInformation("UpdateFaktor start.");
+        _logger.LogDebug("UpdateFaktor start.");
         var pVerteilung = new double[N];
 
         for (var i = 0; i < N; i++)
@@ -398,7 +398,7 @@ public sealed class Optimierer
             faktorwert += FairnessStep;
         }
 
-        _logger.LogInformation("UpdateFaktor done. Faktor={Faktor}", FormatArray(_faktor));
+        _logger.LogDebug("UpdateFaktor done. Faktor={Faktor}", FormatArray(_faktor));
     }
 
     private static int ArgMaxLikeNumpy(ReadOnlySpan<double> values)
@@ -432,7 +432,7 @@ public sealed class Optimierer
     /// </summary>
     public OptimiererStateSnapshot CreateSnapshot()
     {
-        _logger.LogInformation("CreateSnapshot start.");
+        _logger.LogDebug("CreateSnapshot start.");
         var snapshot = new OptimiererStateSnapshot
         {
             N = N,
@@ -448,7 +448,7 @@ public sealed class Optimierer
             VerbrauchEnergieStand = _verbrauchEnergieStand?.ToArray()
         };
 
-        _logger.LogInformation("CreateSnapshot done.");
+        _logger.LogDebug("CreateSnapshot done.");
         return snapshot;
     }
 
