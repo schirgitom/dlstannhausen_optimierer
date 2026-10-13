@@ -49,6 +49,7 @@ ValidateRequiredConfiguration(
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
+builder.Services.AddHealthChecks();
 builder.Services.AddSingleton<OptimizerMetrics>();
 builder.Services.AddSingleton<OptimizerSessionService>();
 builder.Services.AddHostedService<MetricsRefreshService>();
@@ -138,6 +139,7 @@ app.UseSerilogRequestLogging();
 
 app.UseHttpsRedirection();
 app.MapControllers();
+app.MapHealthChecks("/health");
 app.MapMetrics();
 
 app.Run();
@@ -270,4 +272,3 @@ static void ValidateRequiredConfiguration(IConfiguration configuration, IEnumera
     throw new InvalidOperationException(
         $"Missing required configuration values: {string.Join(", ", missingKeys)}");
 }
-
